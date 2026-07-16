@@ -19,7 +19,8 @@ The join of the two is what makes the report meaningful.
 
 ### Verified before committing to this design
 
-All four checks were run against the `gren-format` app (Gren 0.6.6):
+Checks 1–4 were run against the `gren-format` app, check 5 against a purpose-built
+three-function module (Gren 0.6.6):
 
 1. `gren make --sourcemaps` emits a v3 inline base64 source map with
    `sourcesContent` embedded.
@@ -42,31 +43,47 @@ One wrinkle worth recording: the `sources` array holds **module names**
 `c8`/`v8-to-istanbul` off the shelf — they resolve `sources` as paths and would
 look for a file literally named `Formatter.Render.BinopLayout`.
 
-### Never build with `--output` — it produces a program that does not run
+### Never build to a `*.js` output — it produces a program that does not run
 
-`gren make Main --sourcemaps` writes `app`, which has a shebang and ends with:
+A standalone build ends with a shebang and, crucially, this line:
 
 ```js
 _Platform_export({'Main':{'init':$author$project$Main$main(...)}});
 this.Gren.Main.init({});     // <-- starts the program
 ```
 
-`gren make Main --sourcemaps --output=app-cov.js` emits everything **except that
-`this.Gren.Main.init({})` line**. The result defines and exports the program but
-never starts it. `node app-cov.js` exits 0, prints nothing, and produces a
-perfectly plausible-looking V8 coverage file describing nothing but top-level
-module initialization.
+Naming the output `*.js` (lowercase) emits everything **except that
+`this.Gren.Main.init({})` line**, and drops the shebang. The result defines and
+exports the program but never starts it. Running it exits 0, prints nothing, and
+produces a perfectly plausible-looking V8 coverage file describing nothing but
+top-level module initialization.
 
-This cost us a wrong measurement during design: an early run of the formatter
-under `--output=app-sm.js` reported ~5% coverage per module, which was read as
-"a thin single-invocation run" when it was really "`main` never executed". The
-failure is silent — exit 0, a coverage file of the expected shape, no error. The
-only tell was that stdout was empty, and that was masked by a redirect to
-`/dev/null`.
+This is by design and mirrors Elm: `--output=x.js` means "an embeddable module —
+call `init` yourself". It is only a trap because a coverage harness wants a
+*running* program and `.js` is the reflexive thing to type.
 
-**Rule: build the app exactly the way it is normally built (no `--output`), and
-sanity-check that the app produces its usual output before trusting any
-coverage numbers from it.**
+The trigger is the extension, **not `--output` itself**. Measured:
+
+| `--output=` | self-starts | shebang | bytes |
+|---|---|---|---|
+| `a.js` | **no** | no | 322,185 |
+| `b` (no extension) | yes | yes | 322,276 |
+| `c.mjs`, `d.cjs` | yes | yes | 322,276 |
+| `e.JS` (uppercase) | yes | yes | 322,276 |
+| *(omitted)* → `app` | yes | yes | 322,276 |
+
+The 91-byte delta is exactly the shebang + `try`/`catch` + the init line.
+
+**Rule: build with `--output=<name not ending in .js>`** — e.g.
+`--output=cov-app`, which also keeps the coverage build from clobbering the
+project's real `app`. Then sanity-check that it produces its usual output before
+trusting any numbers from it.
+
+This trap already cost one wrong measurement: an early run of the formatter built
+to `--output=app-sm.js` reported ~5% coverage per module, read at the time as "a
+thin single-invocation run" when it was really "`main` never executed". Nothing
+about the failure is loud — exit 0, a coverage file of the expected shape, no
+error. The only tell was empty stdout, masked by a redirect to `/dev/null`.
 
 ### The DCE check
 
@@ -97,11 +114,11 @@ the language that owns its problem:
   resolves counts, joins against the index, renders. This is the numerator.
 
 ```
-gren make Main --sourcemaps          (NO --output; see the warning above)
+gren make Main --sourcemaps --output=cov-app     (NOT *.js -- see warning)
         │
-        ├── app + inline source map ─────────┐
+        ├── cov-app + inline source map ─────┐
         │                                     │
-NODE_V8_COVERAGE=cov node app <args>          │
+NODE_V8_COVERAGE=cov node cov-app <args>      │
         │                                     │
         └── cov/*.json (V8 ranges) ───────────┤
                                               ├──► join ──► coverage.json
@@ -228,8 +245,8 @@ The join writes a `coverage.json` intermediate; renderers sit on top of it.
   point, different DCE result, different question.
 - Denominator: `gren-format-lib/src/**`.
 - Filter out `core` / `argparse` / other dependency modules.
-- Build **without** `--optimize` and **without** `--output` (see the warning
-  above — `--output` yields an app that never starts).
+- Build **without** `--optimize`, and to an output **not** named `*.js` (see the
+  warning above — a `.js` output yields an app that never starts).
 
 ## Known upstream caveats
 
