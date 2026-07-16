@@ -27,17 +27,63 @@ All four checks were run against the `gren-format` app (Gren 0.6.6):
    89 modules, each carrying line *and* column on both sides. Spot-checked:
    `Array.popLast segBoxes` at `BinopLayout.gren:308:17` maps precisely to
    `$gren_lang$core$Array$popLast(segBoxes)` in the generated JS.
-3. `NODE_V8_COVERAGE=dir node app.js` produces per-function byte ranges with
+3. `NODE_V8_COVERAGE=dir node app` produces per-function byte ranges with
    counts, and merges cleanly across multiple runs (one JSON file per run).
 4. **V8 reports never-called nested closures with `count: 0`** rather than
    omitting them. This one is load-bearing: Gren compiles every function to a
    nested closure, so had V8 stayed silent about uncalled ones, they would sit
    inside their covered parent's range and be scored as covered. It doesn't.
+5. **Gren does per-value dead code elimination on local project code**, not just
+   on dependencies — so all four states below are real and distinguishable. See
+   "The DCE check" below for the experiment.
 
 One wrinkle worth recording: the `sources` array holds **module names**
 (`Formatter.Render.BinopLayout`), not file paths. This is why we do not use
 `c8`/`v8-to-istanbul` off the shelf — they resolve `sources` as paths and would
 look for a file literally named `Formatter.Render.BinopLayout`.
+
+### Never build with `--output` — it produces a program that does not run
+
+`gren make Main --sourcemaps` writes `app`, which has a shebang and ends with:
+
+```js
+_Platform_export({'Main':{'init':$author$project$Main$main(...)}});
+this.Gren.Main.init({});     // <-- starts the program
+```
+
+`gren make Main --sourcemaps --output=app-cov.js` emits everything **except that
+`this.Gren.Main.init({})` line**. The result defines and exports the program but
+never starts it. `node app-cov.js` exits 0, prints nothing, and produces a
+perfectly plausible-looking V8 coverage file describing nothing but top-level
+module initialization.
+
+This cost us a wrong measurement during design: an early run of the formatter
+under `--output=app-sm.js` reported ~5% coverage per module, which was read as
+"a thin single-invocation run" when it was really "`main` never executed". The
+failure is silent — exit 0, a coverage file of the expected shape, no error. The
+only tell was that stdout was empty, and that was masked by a redirect to
+`/dev/null`.
+
+**Rule: build the app exactly the way it is normally built (no `--output`), and
+sanity-check that the app produces its usual output before trusting any
+coverage numbers from it.**
+
+### The DCE check
+
+A three-function module (`scratchpad/dcetest`), each function in a different
+reachability state, compiled and run under coverage:
+
+| function | referenced by `main`? | called at runtime? | result |
+|---|---|---|---|
+| `calledAtRuntime` | yes | yes | in JS, count > 0 → **hit** |
+| `neverCalledButReferenced` | yes (untaken `if` branch) | no | in JS, count 0 → **never called** |
+| `neverReferencedAtAll` | no | no | **absent from the JS entirely** → eliminated |
+
+Reported as 3/4 lines covered, with only `neverCalledButReferenced`'s body
+uncovered. Corroborated on dependency code: core's `Array` defines 54 top-level
+functions, 39 reach the JS, 15 (`singleton`, `findLast`, `maximum`, `set`,
+`update`, `insert`, `remove`, `splice`, `takeLast`, …) are eliminated
+individually — so DCE is per-value, not per-module.
 
 ## Architecture
 
@@ -51,11 +97,11 @@ the language that owns its problem:
   resolves counts, joins against the index, renders. This is the numerator.
 
 ```
-gren make Main --sourcemaps --output=app-cov.js
+gren make Main --sourcemaps          (NO --output; see the warning above)
         │
-        ├── app-cov.js + inline source map ──┐
+        ├── app + inline source map ─────────┐
         │                                     │
-NODE_V8_COVERAGE=cov node app-cov.js <args>   │
+NODE_V8_COVERAGE=cov node app <args>          │
         │                                     │
         └── cov/*.json (V8 ranges) ───────────┤
                                               ├──► join ──► coverage.json
@@ -182,7 +228,8 @@ The join writes a `coverage.json` intermediate; renderers sit on top of it.
   point, different DCE result, different question.
 - Denominator: `gren-format-lib/src/**`.
 - Filter out `core` / `argparse` / other dependency modules.
-- Build **without** `--optimize`.
+- Build **without** `--optimize` and **without** `--output` (see the warning
+  above — `--output` yields an app that never starts).
 
 ## Known upstream caveats
 
@@ -207,10 +254,9 @@ knowing before trusting a union's region.
 
 ## Sequencing
 
-- [ ] **0. Verify per-value DCE.** Build a module with an unreferenced function,
-      check whether it appears in the source map. The **eliminated** state only
-      exists if Elm-style per-value dead code elimination carried into Gren.
-      This is assumed, not proven, and the classification depends on it.
+- [x] **0. Verify per-value DCE.** Confirmed on both local and dependency code —
+      the **eliminated** state is real. See "The DCE check" above. This step also
+      turned up the `--output` trap.
 - [x] **1. Coverage mapper** — VLQ decode, merge V8 runs, innermost-range count
       lookup, map to Gren positions. Prototyped and working end-to-end
       (`gren-coverage.js`).
