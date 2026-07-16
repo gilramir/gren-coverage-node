@@ -1,0 +1,415 @@
+module Main exposing (main)
+
+{-| ast-index — the coverage *denominator*.
+
+Reads a list of Gren source files as command-line arguments, parses each to a
+typed `Src.Module` via `compiler-common`, walks it for every function region
+(top-level and `let`-bound) and every `when` branch, and emits `ast-index.json`
+to stdout — the small schema this repo owns (see `PLAN.md`).
+
+Regions are kept as exclusive `(row, col)` positions and never rounded to whole
+lines: `compiler-common#13` lets a `let`-bodied declaration's end bleed into
+column 1 of the next declaration's row, which contributes nothing at position
+granularity but would swallow a whole line if rounded.
+
+Parse or read failures for a single file are reported on stderr and that file is
+skipped; the successfully-parsed modules are still emitted.
+-}
+
+import Bytes
+import Compiler.Ast.Source as Src
+import Compiler.Parse.Context as Context
+import Compiler.Parse.Module as PM
+import Compiler.SourcePosition as SP
+import FileSystem
+import FileSystem.Path as Path
+import Init
+import Json.Encode as Json
+import Node
+import Stream
+import String.Parser.Advanced as Parser
+import Task exposing (Task)
+
+
+main : Node.SimpleProgram a
+main =
+    Node.defineSimpleProgram <| \env ->
+        Init.await FileSystem.initialize <| \fsPerm ->
+            Node.endSimpleProgram (run env fsPerm)
+
+
+{-| Index every file named on the command line, write the JSON array to stdout,
+and report any per-file failures on stderr. -}
+run : Node.Environment -> FileSystem.Permission -> Task Never {}
+run env fsPerm =
+    -- env.args is the full process.argv; user file paths start after node + app.
+    Task.sequence (Array.map (indexFile fsPerm) (Array.dropFirst 2 env.args))
+        |> Task.andThen
+            (\results ->
+                let
+                    modules =
+                        Array.mapAndKeepJust
+                            (\r ->
+                                when r is
+                                    Ok v -> Just v
+                                    Err _ -> Nothing
+                            )
+                            results
+
+                    errs =
+                        Array.mapAndKeepJust
+                            (\r ->
+                                when r is
+                                    Ok _ -> Nothing
+                                    Err e -> Just e
+                            )
+                            results
+
+                    jsonStr =
+                        Json.encode 2 (Json.array (\v -> v) modules)
+                in
+                reportErrors env errs
+                    |> Task.andThen (\_ -> Stream.writeStringAsBytes (jsonStr ++ "\n") env.stdout)
+                    |> Task.map (\_ -> {})
+                    |> Task.onError (\_ -> Task.succeed {})
+            )
+
+
+{-| Print each per-file failure on its own stderr line. -}
+reportErrors : Node.Environment -> Array String -> Task Stream.Error {}
+reportErrors env errs =
+    Array.foldl
+        (\e acc -> acc |> Task.andThen (\_ -> Stream.writeLineAsBytes e env.stderr |> Task.map (\_ -> {})))
+        (Task.succeed {})
+        errs
+
+
+{-| Read, parse and index one file. Never fails the batch: read/UTF-8/parse
+errors come back as `Err message`. -}
+indexFile : FileSystem.Permission -> String -> Task Never (Result String Json.Value)
+indexFile fsPerm pathStr =
+    FileSystem.readFile fsPerm (Path.fromPosixString pathStr)
+        |> Task.mapError (\e -> pathStr ++ ": " ++ FileSystem.errorToString e)
+        |> Task.map
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Nothing ->
+                        Err (pathStr ++ ": file content is not valid UTF-8")
+
+                    Just source ->
+                        parseAndIndex pathStr source
+            )
+        |> Task.onError (\e -> Task.succeed (Err e))
+
+
+{-| Parse a module and encode its AST index, or return the parser's own error
+string. -}
+parseAndIndex : String -> String -> Result String Json.Value
+parseAndIndex pathStr source =
+    let
+        parser =
+            Parser.succeed (\ast payload -> { ast = ast, payload = payload })
+                |> Parser.keep PM.parser
+                |> Parser.keep Parser.getPayload
+    in
+    when Parser.run parser Context.empty source is
+        Err errs ->
+            Err (pathStr ++ ": " ++ PM.errorsToString source errs)
+
+        Ok { ast } ->
+            Ok (encodeModule pathStr ast)
+
+
+
+-- INDEX
+
+
+{-| A function region: a top-level definition or a `let`-bound one. -}
+type alias Fn =
+    { name : String
+    , kind : String
+    , start : SP.Position
+    , end : SP.Position
+    }
+
+
+{-| A `when` branch region, labelled by its pattern and owning function. -}
+type alias Branch =
+    { owner : String
+    , kind : String
+    , pattern : String
+    , start : SP.Position
+    , end : SP.Position
+    }
+
+
+{-| The two lists accumulated while walking a declaration's body. -}
+type alias Acc =
+    { functions : Array Fn
+    , branches : Array Branch
+    }
+
+
+emptyAcc : Acc
+emptyAcc =
+    { functions = [], branches = [] }
+
+
+mergeAcc : Acc -> Acc -> Acc
+mergeAcc a b =
+    { functions = a.functions ++ b.functions
+    , branches = a.branches ++ b.branches
+    }
+
+
+{-| Walk every top-level value's body; only `values` carry executable code
+(aliases, unions and ports emit none). -}
+encodeModule : String -> Src.Module -> Json.Value
+encodeModule pathStr modAst =
+    let
+        acc =
+            Array.foldl (\d a -> mergeAcc a (indexValue d)) emptyAcc modAst.values
+    in
+    Json.object
+        [ { key = "module", value = Json.string modAst.name.value }
+        , { key = "file", value = Json.string pathStr }
+        , { key = "functions", value = Json.array encodeFn acc.functions }
+        , { key = "branches", value = Json.array encodeBranch acc.branches }
+        ]
+
+
+{-| Index one top-level declaration: the function itself, plus everything its
+body contains. Owner of nested branches/lets is the declaration name. -}
+indexValue : Src.ModuleDeclaration Src.Value -> Acc
+indexValue decl =
+    let
+        v =
+            decl.value.value
+
+        name =
+            v.name.value
+
+        topFn =
+            { name = name
+            , kind = "toplevel"
+            , start = v.name.start
+            , end = v.body.end
+            }
+    in
+    mergeAcc
+        { functions = [ topFn ], branches = [] }
+        (walkExpr name v.body)
+
+
+{-| Recurse through an expression, collecting `let`-bound functions and `when`
+branches. `owner` is the nearest enclosing named function. -}
+walkExpr : String -> Src.Expression -> Acc
+walkExpr owner expr =
+    when expr.value is
+        Src.CharLiteral _ ->
+            emptyAcc
+
+        Src.StringLiteral _ ->
+            emptyAcc
+
+        Src.NumberLiteral _ ->
+            emptyAcc
+
+        Src.Var _ ->
+            emptyAcc
+
+        Src.VarQual _ ->
+            emptyAcc
+
+        Src.Operator _ ->
+            emptyAcc
+
+        Src.Accessor _ ->
+            emptyAcc
+
+        Src.ArrayLiteral items ->
+            walkMany owner items
+
+        Src.Record fields ->
+            walkMany owner (Array.map .value fields)
+
+        Src.Update { record, newValues } ->
+            mergeAcc
+                (walkExpr owner record)
+                (walkMany owner (Array.map .value newValues))
+
+        Src.Negate e ->
+            walkExpr owner e
+
+        Src.Binops { left, right } ->
+            mergeAcc (walkExpr owner left) (walkExpr owner right)
+
+        Src.Lambda { body } ->
+            walkExpr owner body
+
+        Src.Call { fn, args } ->
+            mergeAcc (walkExpr owner fn) (walkMany owner args)
+
+        Src.Let { defs, body } ->
+            mergeAcc (walkDefs owner defs) (walkExpr owner body)
+
+        Src.If { branches, elseBranch } ->
+            let
+                branchAcc =
+                    Array.foldl
+                        (\br acc ->
+                            mergeAcc acc
+                                (mergeAcc (walkExpr owner br.test) (walkExpr owner br.body))
+                        )
+                        emptyAcc
+                        branches
+            in
+            mergeAcc branchAcc (walkExpr owner elseBranch)
+
+        Src.When { expression, branches } ->
+            let
+                exprAcc =
+                    walkExpr owner expression
+
+                brAcc =
+                    Array.foldl
+                        (\br acc ->
+                            let
+                                b =
+                                    { owner = owner
+                                    , kind = "when"
+                                    , pattern = renderPattern br.pattern
+                                    , start = br.body.start
+                                    , end = br.body.end
+                                    }
+                            in
+                            mergeAcc
+                                (mergeAcc acc { functions = [], branches = [ b ] })
+                                (walkExpr owner br.body)
+                        )
+                        emptyAcc
+                        branches
+            in
+            mergeAcc exprAcc brAcc
+
+        Src.Access { expression } ->
+            walkExpr owner expression
+
+        Src.Parens e ->
+            walkExpr owner e
+
+
+walkMany : String -> Array Src.Expression -> Acc
+walkMany owner exprs =
+    Array.foldl (\e acc -> mergeAcc acc (walkExpr owner e)) emptyAcc exprs
+
+
+{-| Walk `let` definitions: each `Define` is a `let`-bound function region whose
+body is then walked under its own name; a `Destruct` binds no name, so its body
+is walked under the enclosing owner. -}
+walkDefs : String -> Array (SP.Located Src.Def) -> Acc
+walkDefs owner defs =
+    Array.foldl
+        (\locDef acc ->
+            when locDef.value is
+                Src.Define d ->
+                    let
+                        fn =
+                            { name = d.name.value
+                            , kind = "let"
+                            , start = d.name.start
+                            , end = d.body.end
+                            }
+                    in
+                    mergeAcc
+                        (mergeAcc acc { functions = [ fn ], branches = [] })
+                        (walkExpr d.name.value d.body)
+
+                Src.Destruct { body } ->
+                    mergeAcc acc (walkExpr owner body)
+        )
+        emptyAcc
+        defs
+
+
+{-| A compact one-line label for a branch pattern; not source-faithful, just
+enough to name the branch in a report. -}
+renderPattern : Src.Pattern -> String
+renderPattern pat =
+    when pat.value is
+        Src.PAnything _ ->
+            "_"
+
+        Src.PVar name ->
+            name
+
+        Src.PRecord fields ->
+            "{ " ++ String.join ", " (Array.map (\f -> f.field.value) fields) ++ " }"
+
+        Src.PAlias { pattern, name } ->
+            renderPattern pattern ++ " as " ++ name.value
+
+        Src.PCtor { name, arg } ->
+            when arg is
+                Nothing ->
+                    name.value
+
+                Just a ->
+                    name.value ++ " " ++ renderPattern a
+
+        Src.PCtorQual { module_, name, arg } ->
+            let
+                base =
+                    module_ ++ "." ++ name
+            in
+            when arg is
+                Nothing ->
+                    base
+
+                Just a ->
+                    base ++ " " ++ renderPattern a
+
+        Src.PArray items ->
+            "[ " ++ String.join ", " (Array.map renderPattern items) ++ " ]"
+
+        Src.PChr c ->
+            "'" ++ String.fromChar c ++ "'"
+
+        Src.PStr s ->
+            "\"" ++ s ++ "\""
+
+        Src.PInt { value } ->
+            String.fromInt value
+
+
+
+-- ENCODE
+
+
+encodeFn : Fn -> Json.Value
+encodeFn fn =
+    Json.object
+        [ { key = "name", value = Json.string fn.name }
+        , { key = "kind", value = Json.string fn.kind }
+        , { key = "start", value = encodePos fn.start }
+        , { key = "end", value = encodePos fn.end }
+        ]
+
+
+encodeBranch : Branch -> Json.Value
+encodeBranch br =
+    Json.object
+        [ { key = "owner", value = Json.string br.owner }
+        , { key = "kind", value = Json.string br.kind }
+        , { key = "pattern", value = Json.string br.pattern }
+        , { key = "start", value = encodePos br.start }
+        , { key = "end", value = encodePos br.end }
+        ]
+
+
+encodePos : SP.Position -> Json.Value
+encodePos p =
+    Json.object
+        [ { key = "row", value = Json.int p.row }
+        , { key = "col", value = Json.int p.col }
+        ]

@@ -162,8 +162,8 @@ the only contract between the two components:
       { "owner": "inlineBinopBox",
         "kind": "when",
         "pattern": "Nothing",
-        "start": { "row": 305, "col": 12 },
-        "end":   { "row": 305, "col": 19 } }
+        "start": { "row": 306, "col": 13 },
+        "end":   { "row": 306, "col": 40 } }
     ]
   }
 ]
@@ -171,6 +171,13 @@ the only contract between the two components:
 
 `kind` is `toplevel` or `let` for functions. Positions are **exclusive
 `(row, col)` ends** — never rounded to whole lines (see #13 below).
+
+A branch's region is its **body**, not its pattern. The body is the code that
+runs only when the branch is taken, so its count answers "did this branch fire";
+a pattern-test position gets a count even for branches the runtime tried and
+rejected. `pattern` stays on the record purely as a human-readable label
+(`renderPattern` renders a compact, non-source-faithful form). `owner` is the
+nearest enclosing named function (top-level or `let`).
 
 ### Dependencies for `ast-index/`
 
@@ -277,10 +284,14 @@ knowing before trusting a union's region.
 - [x] **1. Coverage mapper** — VLQ decode, merge V8 runs, innermost-range count
       lookup, map to Gren positions. Prototyped and working end-to-end
       (`gren-coverage.js`).
-- [ ] **2. AST index** — the `ast-index/` Gren app: parse each file via
-      `compiler-common`, walk `Src.Module` for functions (top-level and
-      `let`-bound) and `when` branches, emit `ast-index.json`. Regions must stay
-      exclusive `(row, col)` — see #13 below.
+- [x] **2. AST index** — the `ast-index/` Gren app: parses each file named on
+      the command line via `compiler-common`, walks `Src.Module` for functions
+      (top-level and `let`-bound) and `when` branches, emits `ast-index.json`.
+      Regions are exclusive `(row, col)`; branch region = branch **body** (see
+      the schema note above). Built and verified over `gren-format-lib/src`
+      (29 modules → 461 top-level + 463 `let` functions, 1330 `when` branches,
+      zero parse failures; no reversed regions, every branch owner is a listed
+      function). Run it with `ast-index/ast-index.sh <files…>`.
 - [ ] **3. The join + four-state classification.**
 - [ ] **4. Renderers** — terminal, then lcov.
 - [ ] **5. Wire into `run-tests.sh`** behind a flag.
