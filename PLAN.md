@@ -57,14 +57,27 @@ NODE_V8_COVERAGE=cov node app-cov.js <args>   │
         │                                     │
         └── cov/*.json (V8 ranges) ───────────┤
                                               ├──► join ──► coverage.json
-gren-format --ast-index src/**/*.gren         │              │
-        └── ast-index.json ───────────────────┘              ├──► terminal report
+gren-format --pre-ast <file>  (per file)      │              │
+        └── {module, context} JSON ───────────┘              ├──► terminal report
                                                              └──► lcov
 ```
 
-`--ast-index` is a new batch flag to add to `gren-format`, emitting one JSON
-array of `{module, file, functions: [{name, kind, start, end}], branches: [...]}`
-for all files in one pass. Batch, not per-file, to avoid ~90 process spawns.
+The AST comes from `gren-format`'s **existing** `--pre-ast` flag, called once per
+file. No new flag, and nothing to add to the formatter.
+
+A batch flag was considered and rejected on measurement. The project's own source
+is 29 files (the 89 modules in the source map are mostly `core`/`argparse`, which
+we filter out anyway): `--pre-ast` over all 29 takes **4.1s sequentially, 1.3s at
+`-P8`**. That is noise next to the compile and test run the workflow already
+needs. Adding a coverage-support flag to a formatter would also be scope creep
+into an unrelated tool.
+
+The tradeoff we accept: `--pre-ast` is documented as a debug flag, so we depend
+on another tool's debug surface across repo boundaries. The risk is mild — the
+encoder (`Compiler.Ast.Source.Json`) is shared tooling in `gren-format-lib`, not
+a private formatter detail. If that coupling ever breaks, the fix is *not* a flag
+on the formatter; it is a small Gren app in this repo depending on
+`compiler-common` + `gren-format-lib` directly.
 
 ## The four-state classification
 
@@ -140,9 +153,12 @@ knowing before trusting a union's region.
       check whether it appears in the source map. The **eliminated** state only
       exists if Elm-style per-value dead code elimination carried into Gren.
       This is assumed, not proven, and the classification depends on it.
-- [ ] **1. `--ast-index` batch flag** in `gren-format`.
-- [x] **2. Coverage mapper** — VLQ decode, merge V8 runs, innermost-range count
-      lookup, map to Gren positions. Prototyped and working end-to-end.
+- [x] **1. Coverage mapper** — VLQ decode, merge V8 runs, innermost-range count
+      lookup, map to Gren positions. Prototyped and working end-to-end
+      (`gren-coverage.js`).
+- [ ] **2. AST index** — shell out to `gren-format --pre-ast` per file, walk the
+      JSON for functions (top-level and `let`-bound) and `when` branches with
+      their regions. Regions must stay exclusive `(row, col)` — see #13 below.
 - [ ] **3. The join + four-state classification.**
 - [ ] **4. Renderers** — terminal, then lcov.
 - [ ] **5. Wire into `run-tests.sh`** behind a flag.
