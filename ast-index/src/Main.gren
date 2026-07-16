@@ -20,6 +20,7 @@ import Bytes
 import Compiler.Ast.Source as Src
 import Compiler.Parse.Context as Context
 import Compiler.Parse.Module as PM
+import Compiler.Parse.Number as Number
 import Compiler.SourcePosition as SP
 import FileSystem
 import FileSystem.Path as Path
@@ -259,16 +260,46 @@ walkExpr owner expr =
 
         Src.If { branches, elseBranch } ->
             let
+                -- The `if` keyword position, shared by every branch of the
+                -- chain (`else if` is flattened into `branches` by the parser).
+                ifPoint =
+                    expr.start
+
+                -- One branch record per `if`/`else if` body, labelled by its
+                -- condition; recurse into both the test and the body.
                 branchAcc =
                     Array.foldl
                         (\br acc ->
-                            mergeAcc acc
+                            let
+                                b =
+                                    { owner = owner
+                                    , kind = "if"
+                                    , pattern = renderCondition br.test
+                                    , branchPoint = ifPoint
+                                    , start = br.body.start
+                                    , end = br.body.end
+                                    }
+                            in
+                            mergeAcc
+                                (mergeAcc acc { functions = [], branches = [ b ] })
                                 (mergeAcc (walkExpr owner br.test) (walkExpr owner br.body))
                         )
                         emptyAcc
                         branches
+
+                -- The final `else` body is a branch too.
+                elseRecord =
+                    { owner = owner
+                    , kind = "if"
+                    , pattern = "else"
+                    , branchPoint = ifPoint
+                    , start = elseBranch.start
+                    , end = elseBranch.end
+                    }
             in
-            mergeAcc branchAcc (walkExpr owner elseBranch)
+            mergeAcc
+                (mergeAcc branchAcc { functions = [], branches = [ elseRecord ] })
+                (walkExpr owner elseBranch)
 
         Src.When { expression, branches } ->
             let
@@ -385,6 +416,93 @@ renderPattern pat =
 
         Src.PInt { value } ->
             String.fromInt value
+
+
+{-| A compact, lossy one-line label for an `if` condition — enough to name the
+branch in a report, truncated so a long condition stays on one line. -}
+renderCondition : Src.Expression -> String
+renderCondition expr =
+    let
+        s =
+            renderExpr expr
+    in
+    if String.count s > 48 then
+        String.slice 0 47 s ++ "…"
+
+    else
+        s
+
+
+{-| Render an expression to a short, non-source-faithful label. Compound forms
+collapse to a placeholder (`[…]`, `{…}`, `\…`) — the report shows the source row
+for detail; this is just a name. -}
+renderExpr : Src.Expression -> String
+renderExpr expr =
+    when expr.value is
+        Src.Var { name } ->
+            name
+
+        Src.VarQual { qualifier, name } ->
+            qualifier ++ "." ++ name
+
+        Src.Operator op ->
+            "(" ++ op ++ ")"
+
+        Src.Accessor s ->
+            "." ++ s
+
+        Src.Negate e ->
+            "-" ++ renderExpr e
+
+        Src.Parens e ->
+            "(" ++ renderExpr e ++ ")"
+
+        Src.Access { expression, accessor } ->
+            renderExpr expression ++ "." ++ accessor
+
+        Src.Call { fn, args } ->
+            String.join " " ([ renderExpr fn ] ++ Array.map renderExpr args)
+
+        Src.Binops { left, operator, right } ->
+            renderExpr left ++ " " ++ operator.value ++ " " ++ renderExpr right
+
+        Src.CharLiteral c ->
+            "'" ++ String.fromChar c ++ "'"
+
+        Src.StringLiteral s ->
+            "\"" ++ s ++ "\""
+
+        Src.NumberLiteral outcome ->
+            when outcome is
+                Number.Integer n ->
+                    String.fromInt n
+
+                Number.FloatingPoint { text } ->
+                    text
+
+                Number.Hex n ->
+                    String.fromInt n
+
+        Src.ArrayLiteral _ ->
+            "[…]"
+
+        Src.Record _ ->
+            "{…}"
+
+        Src.Update _ ->
+            "{…}"
+
+        Src.Lambda _ ->
+            "\\…"
+
+        Src.Let _ ->
+            "let …"
+
+        Src.If _ ->
+            "if …"
+
+        Src.When _ ->
+            "when …"
 
 
 

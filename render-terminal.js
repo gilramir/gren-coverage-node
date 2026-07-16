@@ -109,10 +109,14 @@ function printModuleGaps(m, src) {
     ));
   capped(elimFns, (f) =>
     console.log("  " + gray("elim   ") + gray((f.kind + " " + f.name).padEnd(34)) + dim("(removed by DCE)")));
-  capped(neverBrs, (b) =>
-    console.log(
-      "  " + red("never  ") + `when ${bold(b.pattern)} ` + dim(`in ${b.owner}`) + dim(`  :${b.start.row}`)
-    ));
+  capped(neverBrs, (b) => {
+    // `when <pattern>` / `if <cond>` / `else`, per branch kind.
+    const label =
+      b.kind === "if"
+        ? b.pattern === "else" ? "else" : `if ${bold(b.pattern)}`
+        : `when ${bold(b.pattern)}`;
+    console.log("  " + red("never  ") + label + " " + dim(`in ${b.owner}`) + dim(`  :${b.start.row}`));
+  });
 }
 
 // Full annotated source for one module: count | source, uncovered lines red.

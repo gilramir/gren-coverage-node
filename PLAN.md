@@ -170,18 +170,22 @@ the only contract between the two components:
 ]
 ```
 
-`kind` is `toplevel` or `let` for functions. Positions are **exclusive
-`(row, col)` ends** — never rounded to whole lines (see #13 below).
+For functions `kind` is `toplevel` or `let`; for branches it is `when` or `if`.
+Positions are **exclusive `(row, col)` ends** — never rounded to whole lines
+(see #13 below).
 
-A branch's region is its **body**, not its pattern. The body is the code that
-runs only when the branch is taken, so its count answers "did this branch fire";
-a pattern-test position gets a count even for branches the runtime tried and
-rejected. `pattern` stays on the record purely as a human-readable label
-(`renderPattern` renders a compact, non-source-faithful form). `owner` is the
-nearest enclosing named function (top-level or `let`). `branchPoint` is the
-position of the enclosing `when` keyword — the decision site shared by every
-branch of that `when`; it groups siblings so a renderer can treat one `when` as
-one branch block (lcov needs this — see step 4).
+A branch's region is its **body**, not its condition/pattern. The body is the
+code that runs only when the branch is taken, so its count answers "did this
+branch fire"; a condition/pattern-test position gets a count even for branches
+the runtime tried and rejected. `pattern` stays on the record purely as a
+human-readable label — a `when` branch's pattern (`renderPattern`), an `if` /
+`else if` branch's rendered condition (`renderCondition`, lossy and truncated),
+or the literal `"else"` for the trailing else. `owner` is the nearest enclosing
+named function (top-level or `let`). `branchPoint` is the position of the
+enclosing `when` / `if` keyword — the decision site shared by every branch of
+that construct (the parser flattens `else if` into one `if` node); it groups
+siblings so a renderer can treat one construct as one branch block (lcov needs
+this — see step 4).
 
 ### Dependencies for `ast-index/`
 
@@ -234,11 +238,19 @@ the report must label it per-entry-point.
 
 ## Branch coverage is a headline feature, not an afterthought
 
-The AST also carries `when`-branch regions. `gren-format` is one enormous
-constructor dispatch — `makePBox` over every `LPBox`, `insertExpression` over
-every `Src.Expr`. "Which `when` branches never fired" is a far more actionable
-answer to "where are my fixture gaps" than "which lines never ran", and it falls
-out of the same join with no extra machinery.
+The AST also carries branch regions — both `when` branches and `if` /
+`else if` / `else` branches (`kind` is `"when"` or `"if"`). `gren-format` is one
+enormous constructor dispatch — `makePBox` over every `LPBox`,
+`insertExpression` over every `Src.Expr`. "Which branches never fired" is a far
+more actionable answer to "where are my fixture gaps" than "which lines never
+ran", and it falls out of the same join with no extra machinery.
+
+For a `when`, a branch's region is its body and its label is the pattern; for an
+`if`, each `if` / `else if` body is a branch labelled by its (lossily rendered)
+condition and the trailing `else` body is a branch labelled `"else"`. All
+branches of one `if`/`else if`/`else` chain share the `if` keyword as their
+`branchPoint` (the parser flattens `else if` into one node), just as a `when`'s
+branches share the `when` keyword — so each chain is one block.
 
 ## Outputs
 
