@@ -41,12 +41,14 @@ look for a file literally named `Formatter.Render.BinopLayout`.
 
 ## Architecture
 
-**Node.js for the coverage join, Gren for the AST.**
+**Two components, one documented schema between them.** Each half is written in
+the language that owns its problem:
 
-The coverage half is V8's native format plus VLQ source map decoding — JS's home
-turf. The AST half belongs in Gren, where `compiler-common` already parses. A
-Gren rewrite of the coverage half would mean reimplementing VLQ decoding and V8
-JSON decoders for no gain.
+- **`ast-index/`** — a Gren application (`platform: node`). Imports
+  `compiler-common`, parses each source file to a typed `Src.Module`, walks it,
+  and emits the index. This is the denominator.
+- **`gren-coverage.js`** — Node. Decodes the source map, merges V8 coverage runs,
+  resolves counts, joins against the index, renders. This is the numerator.
 
 ```
 gren make Main --sourcemaps --output=app-cov.js
@@ -57,27 +59,83 @@ NODE_V8_COVERAGE=cov node app-cov.js <args>   │
         │                                     │
         └── cov/*.json (V8 ranges) ───────────┤
                                               ├──► join ──► coverage.json
-gren-format --pre-ast <file>  (per file)      │              │
-        └── {module, context} JSON ───────────┘              ├──► terminal report
+ast-index src/**/*.gren                       │              │
+        └── ast-index.json ───────────────────┘              ├──► terminal report
                                                              └──► lcov
 ```
 
-The AST comes from `gren-format`'s **existing** `--pre-ast` flag, called once per
-file. No new flag, and nothing to add to the formatter.
+### Why Gren for the index
 
-A batch flag was considered and rejected on measurement. The project's own source
-is 29 files (the 89 modules in the source map are mostly `core`/`argparse`, which
-we filter out anyway): `--pre-ast` over all 29 takes **4.1s sequentially, 1.3s at
-`-P8`**. That is noise next to the compile and test run the workflow already
-needs. Adding a coverage-support flag to a formatter would also be scope creep
-into an unrelated tool.
+The alternative was to call `gren-format --pre-ast` per file and walk its JSON
+from Node. Rejected: that is stringly-typed poking at another tool's debug dump
+(`v.value.value.name.value` for a declaration name, `imp.value.module_.value` for
+an import), it breaks at runtime rather than at compile time when the AST shifts,
+and it couples this repo to a debug flag across a repo boundary. Parsing directly
+means the Gren compiler reports an AST change as a build error.
 
-The tradeoff we accept: `--pre-ast` is documented as a debug flag, so we depend
-on another tool's debug surface across repo boundaries. The risk is mild — the
-encoder (`Compiler.Ast.Source.Json`) is shared tooling in `gren-format-lib`, not
-a private formatter detail. If that coupling ever breaks, the fix is *not* a flag
-on the formatter; it is a small Gren app in this repo depending on
-`compiler-common` + `gren-format-lib` directly.
+Note that a Gren program *reading `--pre-ast` JSON* would not have helped —
+decoders fail at runtime too. Parsing directly is what buys the type safety.
+
+Conversely, do not rewrite the coverage half in Gren: it would mean
+reimplementing VLQ decoding and V8 JSON decoding for no gain.
+
+### The schema
+
+`ast-index.json` — an array of modules. This is **ours**, small and stable, and
+the only contract between the two components:
+
+```json
+[
+  {
+    "module": "Formatter.Render.BinopLayout",
+    "file": "src/Formatter/Render/BinopLayout.gren",
+    "functions": [
+      { "name": "inlineBinopBox",
+        "kind": "toplevel",
+        "start": { "row": 302, "col": 1 },
+        "end":   { "row": 340, "col": 24 } }
+    ],
+    "branches": [
+      { "owner": "inlineBinopBox",
+        "kind": "when",
+        "pattern": "Nothing",
+        "start": { "row": 305, "col": 12 },
+        "end":   { "row": 305, "col": 19 } }
+    ]
+  }
+]
+```
+
+`kind` is `toplevel` or `let` for functions. Positions are **exclusive
+`(row, col)` ends** — never rounded to whole lines (see #13 below).
+
+### Dependencies for `ast-index/`
+
+`gren-lang/compiler-common` (parser + AST types), `gren-lang/core`,
+`gren-lang/node` (file IO). Deliberately **not** `gren-format-lib` — we emit our
+own schema rather than reusing its AST JSON encoder — and **not**
+`gren-lang/compiler-node`, since taking file paths as arguments avoids needing
+project discovery.
+
+The parse recipe, mirroring `gren-format/src/Format.gren:88`:
+
+```gren
+import Compiler.Ast.Source as Src
+import Compiler.Parse.Context as Context
+import Compiler.Parse.Module as PM
+import String.Parser.Advanced as Parser
+
+parser =
+    Parser.succeed (\ast payload -> { ast = ast, payload = payload })
+        |> Parser.keep PM.parser
+        |> Parser.keep Parser.getPayload
+
+Parser.run parser Context.empty source
+```
+
+The AST walk itself has precedent to copy: `gren-format-lib`'s
+`Formatter/Logical/MakeLogical.gren` already walks `Src.Module` declaration by
+declaration.
 
 ## The four-state classification
 
@@ -156,9 +214,10 @@ knowing before trusting a union's region.
 - [x] **1. Coverage mapper** — VLQ decode, merge V8 runs, innermost-range count
       lookup, map to Gren positions. Prototyped and working end-to-end
       (`gren-coverage.js`).
-- [ ] **2. AST index** — shell out to `gren-format --pre-ast` per file, walk the
-      JSON for functions (top-level and `let`-bound) and `when` branches with
-      their regions. Regions must stay exclusive `(row, col)` — see #13 below.
+- [ ] **2. AST index** — the `ast-index/` Gren app: parse each file via
+      `compiler-common`, walk `Src.Module` for functions (top-level and
+      `let`-bound) and `when` branches, emit `ast-index.json`. Regions must stay
+      exclusive `(row, col)` — see #13 below.
 - [ ] **3. The join + four-state classification.**
 - [ ] **4. Renderers** — terminal, then lcov.
 - [ ] **5. Wire into `run-tests.sh`** behind a flag.
