@@ -149,6 +149,41 @@ knowing before trusting a union's region.
 
 ## Implementation notes
 
+### Tooling conventions
+
+Gren work here goes through **devbox**, like the sibling packages. Each package
+is its own devbox project: a `devbox.json` pinning `nodejs@22` and `gren@0.6`,
+with the real commands under `shell.scripts` (`build`, `build_test`, `test`).
+Never invoke a sibling-relative compiler wrapper — there is no top-level
+`gren.sh`, and `compiler/` is frozen. The pinned `nodejs` is also what runs the
+coverage tool itself, which keeps the V8 coverage format stable across machines.
+
+Entry points are **small bash wrappers over `devbox run`**, matching the style
+already used in `gren-format/` and `gren-format-lib/`. They stay thin — the
+logic lives in `devbox.json`, not the script:
+
+```bash
+#!/bin/bash
+
+set -e
+
+devbox run build
+```
+
+For a script that invokes a built artifact, follow `gren-format/gren-format.sh`:
+resolve the script's own directory and pass arguments straight through, so it
+works from any working directory.
+
+```bash
+#!/bin/bash
+
+THIS_DIR=$(dirname $(realpath $0))
+
+node "${THIS_DIR}"/gren-coverage.js "$@"
+```
+
+### Details
+
 - **Innermost-range lookup is required.** V8 reports a parent function's range as
   covering its nested closures textually. A naive "is this offset inside any
   count > 0 range" marks uncalled inner closures as covered. Resolve each offset
