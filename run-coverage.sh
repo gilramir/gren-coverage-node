@@ -34,7 +34,13 @@ echo "==> building the test harness with sourcemaps (output NOT *.js)"
 
 echo "==> running the harness under V8 coverage"
 rm -rf "${COVDIR}" && mkdir -p "${COVDIR}"
-( cd "${LIB}/tests" && NODE_V8_COVERAGE="${COVDIR}" node cov-app >/dev/null )
+# Show the test results (this is still a test run) but don't abort on failure —
+# coverage of a partial run is worth reporting, just flag that it happened.
+test_rc=0
+( cd "${LIB}/tests" && NODE_V8_COVERAGE="${COVDIR}" node cov-app ) || test_rc=$?
+if [ "${test_rc}" -ne 0 ]; then
+  echo "!! tests exited ${test_rc} — coverage below reflects a failing/partial run"
+fi
 
 echo "==> joining"
 node "${THIS_DIR}/gren-coverage.js" \
@@ -49,3 +55,6 @@ node "${THIS_DIR}/render-lcov.js" "${OUT}/coverage.json" > "${OUT}/coverage.lcov
 # Terminal report (the four-state view). genhtml the lcov for a browsable one:
 #   genhtml out/coverage.lcov -o out/html --branch-coverage
 node "${THIS_DIR}/render-terminal.js" "${OUT}/coverage.json"
+
+# Propagate the test result so CI still fails on a failing suite.
+exit "${test_rc}"

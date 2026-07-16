@@ -328,7 +328,16 @@ knowing before trusting a union's region.
         check passes. Verified: `genhtml --branch-coverage` builds a full HTML
         report (lines 92.4%, functions 98.2% / 853 hit, branches 77.2% / 906
         hit) whose hit counts reconcile exactly with the four-state tallies.
-- [ ] **5. Wire into `run-tests.sh`** behind a flag (see `run-coverage.sh`).
+- [x] **5. Wire into `run-tests.sh`** behind a flag. `gren-format-lib/tests/
+      run-tests.sh --coverage` execs `../../gren-coverage-node/run-coverage.sh`
+      (with a clear error if the sibling repo is absent); the plain invocation is
+      untouched. `run-coverage.sh` now shows the test results (it is still a test
+      run), does not abort on a failing suite — coverage of a partial run is
+      still reported, flagged — and exits with the test process's own code so CI
+      still fails on red. Verified: `--coverage` builds the index, builds a
+      sourcemapped `cov-app`, runs the 178 tests under V8 coverage, and prints
+      the four-state report + writes `out/coverage.lcov`; plain `run-tests.sh`
+      still passes 178/178.
 
 ### The join CLI
 
