@@ -12,7 +12,7 @@
 set -e
 
 THIS_DIR=$(dirname "$(realpath "$0")")
-LIB="${THIS_DIR}/../gren-format-lib"
+LIB=$(realpath "${THIS_DIR}/../gren-format-lib")   # clean absolute path (no ..) for report SF/file
 OUT="${THIS_DIR}/out"
 COVDIR="${OUT}/v8cov"
 
@@ -41,4 +41,11 @@ node "${THIS_DIR}/gren-coverage.js" \
   --app "${LIB}/tests/cov-app" \
   --cov "${COVDIR}" \
   --index "${OUT}/ast-index.json" \
-  --out "${OUT}/coverage.json"
+  --out "${OUT}/coverage.json" >/dev/null
+
+echo "==> rendering lcov -> ${OUT}/coverage.lcov"
+node "${THIS_DIR}/render-lcov.js" "${OUT}/coverage.json" > "${OUT}/coverage.lcov"
+
+# Terminal report (the four-state view). genhtml the lcov for a browsable one:
+#   genhtml out/coverage.lcov -o out/html --branch-coverage
+node "${THIS_DIR}/render-terminal.js" "${OUT}/coverage.json"

@@ -162,6 +162,7 @@ the only contract between the two components:
       { "owner": "inlineBinopBox",
         "kind": "when",
         "pattern": "Nothing",
+        "branchPoint": { "row": 303, "col": 5 },
         "start": { "row": 306, "col": 13 },
         "end":   { "row": 306, "col": 40 } }
     ]
@@ -177,7 +178,10 @@ runs only when the branch is taken, so its count answers "did this branch fire";
 a pattern-test position gets a count even for branches the runtime tried and
 rejected. `pattern` stays on the record purely as a human-readable label
 (`renderPattern` renders a compact, non-source-faithful form). `owner` is the
-nearest enclosing named function (top-level or `let`).
+nearest enclosing named function (top-level or `let`). `branchPoint` is the
+position of the enclosing `when` keyword — the decision site shared by every
+branch of that `when`; it groups siblings so a renderer can treat one `when` as
+one branch block (lcov needs this — see step 4).
 
 ### Dependencies for `ast-index/`
 
@@ -307,8 +311,23 @@ knowing before trusting a union's region.
       `never-called` one present-with-count-0, and the absent/never module
       tallies reconcile exactly — so the classification is checked against
       reality, not just internally consistent.
-- [ ] **4. Renderers** — terminal annotated source, then lcov. (The step-3
-      summary is a stopgap; the annotated `count | source-line` view is here.)
+- [x] **4. Renderers** — both read `coverage.json`.
+      - `render-terminal.js`: four-state summary (`% of reachable`), the worst
+        (most never-called) modules ranked, each listing its never-called /
+        eliminated functions and never-called branches (capped, `--module <Name>`
+        for the rest); `--module <Name>` prints full annotated `count | source`
+        with uncovered lines flagged. TTY color, `NO_COLOR` honoured.
+      - `render-lcov.js`: standard tracefile (`SF/FN/FNDA/BRDA/DA/…`). Two lcov
+        quirks handled: functions are keyed by name so duplicate `let` helpers
+        get an `@row` suffix; and lcov only counts a branch block when ≥2
+        alternatives share a line, so a `when`'s branches are anchored at their
+        shared `branchPoint` (the `when` keyword) — which required adding
+        `branchPoint` to the AST-index schema. A `when` whose code was
+        eliminated emits no branch records; each reached `when`-point line gets a
+        line count = Σ(branch takings) so genhtml's "branchcov needs linecov"
+        check passes. Verified: `genhtml --branch-coverage` builds a full HTML
+        report (lines 92.4%, functions 98.2% / 853 hit, branches 77.2% / 906
+        hit) whose hit counts reconcile exactly with the four-state tallies.
 - [ ] **5. Wire into `run-tests.sh`** behind a flag (see `run-coverage.sh`).
 
 ### The join CLI

@@ -133,11 +133,15 @@ type alias Fn =
     }
 
 
-{-| A `when` branch region, labelled by its pattern and owning function. -}
+{-| A `when` branch region, labelled by its pattern and owning function.
+`branchPoint` is the position of the enclosing `when` keyword — the decision
+site shared by all branches of that `when`. It groups sibling branches (e.g. so
+an lcov renderer can emit them as one branch block). -}
 type alias Branch =
     { owner : String
     , kind : String
     , pattern : String
+    , branchPoint : SP.Position
     , start : SP.Position
     , end : SP.Position
     }
@@ -279,6 +283,7 @@ walkExpr owner expr =
                                     { owner = owner
                                     , kind = "when"
                                     , pattern = renderPattern br.pattern
+                                    , branchPoint = expr.start
                                     , start = br.body.start
                                     , end = br.body.end
                                     }
@@ -402,6 +407,7 @@ encodeBranch br =
         [ { key = "owner", value = Json.string br.owner }
         , { key = "kind", value = Json.string br.kind }
         , { key = "pattern", value = Json.string br.pattern }
+        , { key = "branchPoint", value = encodePos br.branchPoint }
         , { key = "start", value = encodePos br.start }
         , { key = "end", value = encodePos br.end }
         ]

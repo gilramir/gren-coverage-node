@@ -173,6 +173,22 @@ function emptyTally() {
 }
 function tally(t, state) { t[state]++; t.total++; }
 
+// Per-line hit counts for one module: the max innermost count over every
+// segment on that source line. These are the executable lines (a line with no
+// mapped segment emitted no code) and feed the annotated view + lcov DA records.
+function lineCounts(modSegs, countAt) {
+  const m = new Map();
+  for (const seg of modSegs) {
+    const c = countAt(seg.genOffset);
+    if (c === null) continue;
+    const prev = m.get(seg.row);
+    m.set(seg.row, prev === undefined ? c : Math.max(prev, c));
+  }
+  return [...m.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([line, count]) => ({ line, count }));
+}
+
 // --- CLI -----------------------------------------------------------------
 
 function parseArgs(argv) {
@@ -224,7 +240,9 @@ function main() {
       return { ...br, state: r.state, count: r.count, mapped: r.mapped };
     });
 
-    return { module: mod.module, file: mod.file, inSourceMap: present, functions, branches };
+    const lines = present && modSegs ? lineCounts(modSegs, countAt) : [];
+
+    return { module: mod.module, file: mod.file, inSourceMap: present, functions, branches, lines };
   });
 
   const coverage = {
