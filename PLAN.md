@@ -292,9 +292,36 @@ knowing before trusting a union's region.
       (29 modules → 461 top-level + 463 `let` functions, 1330 `when` branches,
       zero parse failures; no reversed regions, every branch owner is a listed
       function). Run it with `ast-index/ast-index.sh <files…>`.
-- [ ] **3. The join + four-state classification.**
-- [ ] **4. Renderers** — terminal, then lcov.
-- [ ] **5. Wire into `run-tests.sh`** behind a flag.
+- [x] **3. The join + four-state classification.** `gren-coverage.js` decodes
+      the inline source map, groups mapping segments by module in Gren `(row,col)`
+      coordinates, merges the V8 runs, and for each AST-index region assigns a
+      state by innermost-range count: `absent` (module not in the map),
+      `eliminated` (module present, no mapped segment in the region),
+      `never-called` (mapped, max count 0), `hit` (max count > 0). Emits
+      `coverage.json` + a terminal summary. Region membership uses exclusive
+      `(row, col)` so a `#13` whitespace-bleed contributes zero.
+      `run-coverage.sh` drives the whole pipeline for the initial target.
+      Verified end-to-end against the test harness (178 tests): functions
+      853 hit / 3 never / 13 eliminated / 55 absent; branches 906 / 267 / 30 / 127.
+      Every `eliminated` function was confirmed 0× in the compiled JS, every
+      `never-called` one present-with-count-0, and the absent/never module
+      tallies reconcile exactly — so the classification is checked against
+      reality, not just internally consistent.
+- [ ] **4. Renderers** — terminal annotated source, then lcov. (The step-3
+      summary is a stopgap; the annotated `count | source-line` view is here.)
+- [ ] **5. Wire into `run-tests.sh`** behind a flag (see `run-coverage.sh`).
+
+### The join CLI
+
+```
+node gren-coverage.js --app <cov-app> --cov <v8-dir> --index <ast-index.json>
+                      [--out coverage.json]
+```
+
+`--app` is the sourcemapped build (its inline map supplies `sources` + segments),
+`--cov` the `NODE_V8_COVERAGE` directory (all runs merged), `--index` the
+`ast-index.json` denominator. The AST index *is* the module filter — only its
+modules are classified, so `core`/`argparse` need no explicit exclusion.
 
 ## Implementation notes
 

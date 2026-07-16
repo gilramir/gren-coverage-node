@@ -1,14 +1,26 @@
 #!/usr/bin/env node
-// gren-coverage: map V8 coverage of a compiled Gren node app back to Gren source lines.
-//   node gren-coverage.js <app.js> <v8-coverage-dir> [--filter=Prefix] [--list]
+// gren-coverage: join V8 coverage of a compiled Gren node app against the AST
+// index to classify every function and `when` branch into one of four states.
 //
-// STATUS: validated prototype, step 2 of PLAN.md — not the finished tool.
-// It covers the source-map half only: the denominator is the set of lines the
-// compiler emitted mapped code for, so functions removed by dead code
-// elimination are invisible here rather than reported as uncovered. Recovering
-// those needs the AST join (steps 1 and 3). See PLAN.md.
+//   node gren-coverage.js --app <cov-app> --cov <v8-dir> --index <ast-index.json>
+//                         [--out coverage.json]
+//
+// The AST index (from ast-index/) is the denominator: it lists every function
+// and branch region that exists in the *source*. The source map + V8 coverage
+// are the numerator: they say which of those regions actually emitted JS and
+// how often it ran. Joining the two is what makes DCE'd code visible as
+// "eliminated" instead of silently vanishing from the denominator.
+//
+// Four states per region (see PLAN.md):
+//   hit          some mapped position in the region ran (count > 0)
+//   never-called region has mapped positions, all count 0 (reachable, untested)
+//   eliminated   module is in the source map but the region has no mapped
+//                positions — dead-code-eliminated from this entry point
+//   absent       module never appears in the source map at all
 const fs = require("fs");
 const path = require("path");
+
+// --- source map / V8 decoding -------------------------------------------
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 function decodeVLQ(str) {
@@ -26,21 +38,23 @@ function decodeVLQ(str) {
   return out;
 }
 
-function readMap(jsPath) {
-  const js = fs.readFileSync(jsPath, "utf8");
+function readMap(appPath) {
+  const js = fs.readFileSync(appPath, "utf8");
   const m = js.match(/sourceMappingURL=data:application\/json;(?:charset=[^;]+;)?base64,([A-Za-z0-9+/=]+)/);
-  if (!m) throw new Error("no inline sourcemap in " + jsPath + " (compile with --sourcemaps)");
+  if (!m) throw new Error("no inline sourcemap in " + appPath + " (compile with --sourcemaps)");
   return { js, map: JSON.parse(Buffer.from(m[1], "base64").toString()) };
 }
 
-// generated line/col -> absolute offset
+// generated line -> absolute (UTF-16) offset of that line's first char
 function lineStarts(js) {
   const starts = [0];
   for (let i = 0; i < js.length; i++) if (js[i] === "\n") starts.push(i + 1);
   return starts;
 }
 
-function parseSegments(map) {
+// Decode every mapping segment, carrying source (module, row, col) in Gren's
+// 1-based coordinates plus the absolute generated offset for count lookup.
+function parseSegments(map, starts) {
   const segs = [];
   let srcIdx = 0, srcLine = 0, srcCol = 0, nameIdx = 0;
   const lines = map.mappings.split(";");
@@ -54,7 +68,12 @@ function parseSegments(map) {
       if (f.length >= 4) {
         srcIdx += f[1]; srcLine += f[2]; srcCol += f[3];
         if (f.length >= 5) nameIdx += f[4];
-        segs.push({ genLine, genCol, srcIdx, srcLine: srcLine + 1 });
+        segs.push({
+          srcIdx,
+          row: srcLine + 1,   // Gren rows are 1-based
+          col: srcCol + 1,    // Gren cols are 1-based
+          genOffset: starts[genLine] + genCol,
+        });
       }
     }
   }
@@ -62,14 +81,14 @@ function parseSegments(map) {
 }
 
 // Merge every V8 coverage JSON in dir for the given script url substring.
-function loadRanges(covDir, jsBase) {
+function loadRanges(covDir, appBase) {
   const all = [];
   for (const f of fs.readdirSync(covDir)) {
     if (!f.endsWith(".json")) continue;
     let j;
     try { j = JSON.parse(fs.readFileSync(path.join(covDir, f), "utf8")); } catch { continue; }
     for (const script of (j.result || [])) {
-      if (!script.url.includes(jsBase)) continue;
+      if (!script.url.includes(appBase)) continue;
       for (const fn of script.functions)
         for (const r of fn.ranges) all.push(r);
     }
@@ -77,7 +96,8 @@ function loadRanges(covDir, jsBase) {
   return all;
 }
 
-// innermost-range lookup: sort by width desc so later (narrower) writes win.
+// innermost-range lookup: narrowest enclosing range wins, so an uncalled inner
+// closure (count 0) is not masked by its covered parent's range.
 function buildCountLookup(ranges) {
   const sorted = ranges.slice().sort(
     (a, b) => (b.endOffset - b.startOffset) - (a.endOffset - a.startOffset));
@@ -93,60 +113,173 @@ function buildCountLookup(ranges) {
   };
 }
 
-function main() {
-  const [jsPath, covDir] = process.argv.slice(2).filter(a => !a.startsWith("--"));
-  const args = process.argv.filter(a => a.startsWith("--"));
-  const filter = (args.find(a => a.startsWith("--filter=")) || "").split("=")[1];
-  const list = args.includes("--list");
+// --- the join ------------------------------------------------------------
 
-  const { js, map } = readMap(jsPath);
-  const starts = lineStarts(js);
-  const segs = parseSegments(map);
-  const ranges = loadRanges(covDir, path.basename(jsPath));
-  if (!ranges.length) { console.error("no coverage ranges found for " + path.basename(jsPath)); process.exit(1); }
-  const countAt = buildCountLookup(ranges);
+function cmpPos(a, b) { return a.row - b.row || a.col - b.col; }
 
-  // srcIdx -> Map(srcLine -> hits)
-  const hits = new Map();
+// A region owns a segment when start <= seg < end, comparing (row, col) as
+// exclusive positions (never rounded to lines — see compiler-common#13).
+function inRegion(seg, start, end) {
+  return cmpPos(seg, start) >= 0 && cmpPos(seg, end) < 0;
+}
+
+// Group segments by their source module name, each sorted by position so a
+// region's segments form a contiguous slice we can binary-search.
+function segmentsByModule(segs, sources) {
+  const byModule = new Map();
   for (const s of segs) {
-    if (filter && !map.sources[s.srcIdx].startsWith(filter)) continue;
-    const off = starts[s.genLine] + s.genCol;
-    const c = countAt(off);
-    if (c === null) continue;
-    if (!hits.has(s.srcIdx)) hits.set(s.srcIdx, new Map());
-    const m = hits.get(s.srcIdx);
-    m.set(s.srcLine, Math.max(m.get(s.srcLine) || 0, c));
+    const mod = sources[s.srcIdx];
+    let arr = byModule.get(mod);
+    if (!arr) { arr = []; byModule.set(mod, arr); }
+    arr.push(s);
+  }
+  for (const arr of byModule.values()) arr.sort(cmpPos);
+  return byModule;
+}
+
+// First index into a position-sorted array whose element is >= start.
+function lowerBound(arr, start) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cmpPos(arr[mid], start) < 0) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// Classify one region against its module's segments and the V8 counts.
+//   inSourceMap false -> "absent"
+//   no segments in region -> "eliminated"
+//   else max count over the region: >0 -> "hit", 0 -> "never-called"
+function classifyRegion(region, modSegs, countAt) {
+  if (modSegs === undefined) return { state: "absent", count: null, mapped: 0 };
+
+  let maxCount = null, mapped = 0;
+  for (let i = lowerBound(modSegs, region.start); i < modSegs.length; i++) {
+    const seg = modSegs[i];
+    if (cmpPos(seg, region.end) >= 0) break; // sorted: past the region
+    mapped++;
+    const c = countAt(seg.genOffset);
+    if (c !== null) maxCount = maxCount === null ? c : Math.max(maxCount, c);
   }
 
-  const rows = [];
-  for (const [idx, lineMap] of hits) {
-    const covered = [...lineMap.values()].filter(c => c > 0).length;
-    const total = lineMap.size;
-    rows.push({ name: map.sources[idx], covered, total,
-                pct: total ? (100 * covered / total) : 100,
-                missing: [...lineMap.entries()].filter(([, c]) => c === 0).map(([l]) => l).sort((a, b) => a - b),
-                content: map.sourcesContent[idx] });
-  }
-  rows.sort((a, b) => a.pct - b.pct);
+  if (mapped === 0) return { state: "eliminated", count: null, mapped: 0 };
+  const count = maxCount === null ? 0 : maxCount;
+  return { state: count > 0 ? "hit" : "never-called", count, mapped };
+}
 
-  let tc = 0, tt = 0;
-  console.log("Gren line coverage (executable lines only)\n");
-  console.log("module".padEnd(42) + "cov/exec".padStart(11) + "     pct");
-  console.log("-".repeat(64));
-  for (const r of rows) {
-    tc += r.covered; tt += r.total;
-    console.log(r.name.padEnd(42) + `${r.covered}/${r.total}`.padStart(11) + `  ${r.pct.toFixed(1).padStart(6)}%`);
-  }
-  console.log("-".repeat(64));
-  console.log("TOTAL".padEnd(42) + `${tc}/${tt}`.padStart(11) + `  ${(100 * tc / tt).toFixed(1).padStart(6)}%`);
+function emptyTally() {
+  return { hit: 0, "never-called": 0, eliminated: 0, absent: 0, total: 0 };
+}
+function tally(t, state) { t[state]++; t.total++; }
 
-  if (list) for (const r of rows) {
-    if (!r.missing.length) continue;
-    console.log(`\n=== ${r.name}: ${r.missing.length} uncovered lines`);
-    const src = r.content.split("\n");
-    for (const l of r.missing.slice(0, 12))
-      console.log(String(l).padStart(5) + " | " + (src[l - 1] || "").trim().slice(0, 78));
-    if (r.missing.length > 12) console.log(`      ... ${r.missing.length - 12} more`);
+// --- CLI -----------------------------------------------------------------
+
+function parseArgs(argv) {
+  const opt = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--app") opt.app = argv[++i];
+    else if (a === "--cov") opt.cov = argv[++i];
+    else if (a === "--index") opt.index = argv[++i];
+    else if (a === "--out") opt.out = argv[++i];
+    else throw new Error("unknown argument: " + a);
+  }
+  for (const k of ["app", "cov", "index"])
+    if (!opt[k]) throw new Error("missing required --" + k);
+  return opt;
+}
+
+function main() {
+  const opt = parseArgs(process.argv.slice(2));
+
+  const index = JSON.parse(fs.readFileSync(opt.index, "utf8"));
+  const { js, map } = readMap(opt.app);
+  const starts = lineStarts(js);
+  const segs = parseSegments(map, starts);
+  const ranges = loadRanges(opt.cov, path.basename(opt.app));
+  if (!ranges.length) {
+    console.error("no V8 coverage ranges found for " + path.basename(opt.app) + " in " + opt.cov);
+    process.exit(1);
+  }
+  const countAt = buildCountLookup(ranges);
+  const byModule = segmentsByModule(segs, map.sources);
+  const inSourceMap = new Set(map.sources);
+
+  const fnTally = emptyTally();
+  const brTally = emptyTally();
+
+  const modules = index.map((mod) => {
+    const modSegs = byModule.get(mod.module);
+    const present = inSourceMap.has(mod.module);
+
+    const functions = mod.functions.map((fn) => {
+      const r = classifyRegion(fn, present ? (modSegs || []) : undefined, countAt);
+      tally(fnTally, r.state);
+      return { ...fn, state: r.state, count: r.count, mapped: r.mapped };
+    });
+    const branches = mod.branches.map((br) => {
+      const r = classifyRegion(br, present ? (modSegs || []) : undefined, countAt);
+      tally(brTally, r.state);
+      return { ...br, state: r.state, count: r.count, mapped: r.mapped };
+    });
+
+    return { module: mod.module, file: mod.file, inSourceMap: present, functions, branches };
+  });
+
+  const coverage = {
+    app: path.basename(opt.app),
+    summary: { functions: fnTally, branches: brTally },
+    modules,
+  };
+
+  if (opt.out) {
+    fs.writeFileSync(opt.out, JSON.stringify(coverage, null, 2) + "\n");
+    console.error("wrote " + opt.out);
+  }
+
+  printSummary(coverage);
+}
+
+function pct(t) {
+  const denom = t.total - t.absent - t.eliminated;
+  return denom ? (100 * t.hit / denom) : 100;
+}
+
+function printSummary(coverage) {
+  const { functions: f, branches: b } = coverage.summary;
+  const line = (label, t) =>
+    `${label.padEnd(11)}` +
+    `${String(t.hit).padStart(6)} hit ` +
+    `${String(t["never-called"]).padStart(6)} never ` +
+    `${String(t.eliminated).padStart(6)} elim ` +
+    `${String(t.absent).padStart(6)} absent ` +
+    `${String(t.total).padStart(6)} total ` +
+    `  ${pct(t).toFixed(1).padStart(5)}% of reachable`;
+
+  console.log("\ngren-coverage — four-state classification (" + coverage.app + ")\n");
+  console.log(line("functions", f));
+  console.log(line("branches", b));
+
+  // Worst modules first: most never-called functions is the actionable signal.
+  const rows = coverage.modules
+    .map((m) => ({
+      module: m.module,
+      never: m.functions.filter((x) => x.state === "never-called").length,
+      brNever: m.branches.filter((x) => x.state === "never-called").length,
+      elim: m.functions.filter((x) => x.state === "eliminated").length,
+    }))
+    .filter((r) => r.never || r.brNever)
+    .sort((a, b) => (b.never + b.brNever) - (a.never + a.brNever));
+
+  if (rows.length) {
+    console.log("\nmodules with untested (never-called) code — write fixtures here:\n");
+    console.log("module".padEnd(46) + "fn-never  br-never  fn-elim");
+    console.log("-".repeat(72));
+    for (const r of rows.slice(0, 25))
+      console.log(r.module.padEnd(46) +
+        String(r.never).padStart(8) + String(r.brNever).padStart(10) + String(r.elim).padStart(9));
   }
 }
+
 main();
