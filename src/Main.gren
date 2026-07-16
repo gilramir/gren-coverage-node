@@ -1,0 +1,192 @@
+module Main exposing (main)
+
+{-| The `gren-coverage` CLI: one Node program, subcommand-dispatched.
+
+    gren-coverage index <files…>               -- parse sources → ast-index.json (denominator)
+    gren-coverage join  --app --cov --index    -- decode sourcemap+V8, classify → coverage.json
+    gren-coverage render text <coverage.json>  -- annotated four-state terminal report
+    gren-coverage render lcov <coverage.json>  -- LCOV tracefile for genhtml / editors
+
+Top-level verbs split into stages that *produce* coverage.json (`index`,
+`join`) and the `render` group that *consumes* it. `index` and the `render`
+views are native Gren; `join` shells out to the one irreducibly-JS engine
+(`gren-coverage.js`).
+-}
+
+import Argparse.Parser as AP
+import Argparse.PrettyPrinter as PP
+import Argparse.Program as Program
+import ChildProcess
+import Command.Join as Join
+import Command.RenderLcov as RenderLcov
+import Command.RenderText as RenderText
+import Coverage.Index as Index
+import Dict
+import FileSystem
+import FileSystem.Path exposing (Path)
+import Init
+import Node
+import Task exposing (Task)
+import Terminal
+
+
+
+-- COMMANDS (one variant per subcommand; each command's `builder` produces this)
+
+
+type Command
+    = Index { files : Array Path }
+    | RenderText
+        { coverage : Path
+        , module_ : Maybe String
+        , top : Maybe Int
+        , all : Bool
+        }
+    | RenderLcov { coverage : Path }
+    | Join
+        { app : Path
+        , cov : Path
+        , index : Path
+        , out : Maybe Path
+        }
+
+
+indexCommand : AP.Command (Array Path) {} Command
+indexCommand =
+    { word = "index"
+    , arguments =
+        AP.oneOrMoreArgs
+            { value = AP.pathParser, help = "Gren source file(s) to index" }
+    , flags = AP.noFlags
+    , commonDescription = Just "Build the coverage denominator: every function and branch region in the given sources."
+    , summary = "Parse sources and emit ast-index.json to stdout."
+    , example = PP.words "gren-coverage index src/Main.gren > ast-index.json"
+    , builder = \files _flags -> Index { files = files }
+    }
+
+
+renderTextCommand : AP.Command Path { module_ : Maybe String, top : Maybe Int, all : Bool } Command
+renderTextCommand =
+    { word = "text"
+    , arguments =
+        AP.oneArg { value = AP.pathParser, help = "coverage.json produced by `join`" }
+    , flags =
+        AP.initFlags
+            (\module_ top all -> { module_ = module_, top = top, all = all })
+            |> AP.flag (AP.LongOnly "module") AP.stringParser "Print the full annotated source of one module"
+            |> AP.flag (AP.LongOnly "top") AP.intParser "Show only the N worst modules"
+            |> AP.toggle (AP.LongOnly "all") "Show every module, not just the worst"
+    , commonDescription = Just "Human-readable four-state coverage report (colorized on a TTY, honours NO_COLOR)."
+    , summary = "Render coverage.json as a terminal report."
+    , example = PP.words "gren-coverage render text coverage.json --module Formatter.Render.Box"
+    , builder =
+        \coverage flags ->
+            RenderText
+                { coverage = coverage
+                , module_ = flags.module_
+                , top = flags.top
+                , all = flags.all
+                }
+    }
+
+
+renderLcovCommand : AP.Command Path {} Command
+renderLcovCommand =
+    { word = "lcov"
+    , arguments =
+        AP.oneArg { value = AP.pathParser, help = "coverage.json produced by `join`" }
+    , flags = AP.noFlags
+    , commonDescription = Just "Standard LCOV tracefile for genhtml, editor gutters, or CI."
+    , summary = "Render coverage.json as an LCOV tracefile to stdout."
+    , example = PP.words "gren-coverage render lcov coverage.json > coverage.lcov"
+    , builder = \coverage _flags -> RenderLcov { coverage = coverage }
+    }
+
+
+joinCommand : AP.Command {} { app : Path, cov : Path, index : Path, out : Maybe Path } Command
+joinCommand =
+    { word = "join"
+    , arguments = AP.noArgs
+    , flags =
+        AP.initFlags
+            (\app cov index out -> { app = app, cov = cov, index = index, out = out })
+            |> AP.requiredFlag (AP.LongOnly "app") AP.pathParser "The sourcemapped cov-app built with `gren make --sourcemaps`"
+            |> AP.requiredFlag (AP.LongOnly "cov") AP.pathParser "NODE_V8_COVERAGE output directory"
+            |> AP.requiredFlag (AP.LongOnly "index") AP.pathParser "ast-index.json from `gren-coverage index`"
+            |> AP.flag (AP.LongOnly "out") AP.pathParser "Write coverage.json here (default: stdout)"
+    , commonDescription = Just "Decode the sourcemap + V8 counts and classify every region (delegates to gren-coverage.js)."
+    , summary = "Join V8 execution data against the AST index."
+    , example = PP.words "gren-coverage join --app cov-app --cov v8cov --index ast-index.json --out coverage.json"
+    , builder = \_args flags -> Join flags
+    }
+
+
+
+-- PARSER (top level = pipeline stages + the `render` group)
+
+
+parser : AP.App Command
+parser =
+    { name = "gren-coverage"
+    , version = "0.1.0"
+    , commands =
+        AP.defineGroup
+            |> AP.withCommand indexCommand
+            |> AP.withCommand joinCommand
+            |> AP.withPrefix "render" renderGroup
+    , intro = PP.empty
+    , outro = PP.empty
+    }
+
+
+renderGroup : AP.GroupParser Command
+renderGroup =
+    AP.defineGroup
+        |> AP.withCommand renderTextCommand
+        |> AP.withCommand renderLcovCommand
+
+
+
+-- WIRING
+
+
+type alias Context =
+    { fs : FileSystem.Permission
+    , cp : ChildProcess.Permission
+    , useColor : Bool
+    }
+
+
+main : Node.SimpleProgram a
+main =
+    Program.runWithContext
+        { parser = parser
+        , init =
+            \_env toProgram ->
+                Init.await FileSystem.initialize <| \fs ->
+                Init.await ChildProcess.initialize <| \cp ->
+                Init.await Terminal.initialize <| \terminal ->
+                Init.awaitTask Node.getEnvironmentVariables <| \envVars ->
+                    let
+                        useColor =
+                            terminal /= Nothing && not (Dict.member "NO_COLOR" envVars)
+                    in
+                    toProgram { fs = fs, cp = cp, useColor = useColor }
+        , onCommand = onCommand
+        }
+
+
+onCommand : Node.Environment -> Context -> Command -> Task Program.Failure {}
+onCommand _env ctx cmd =
+    when cmd is
+        Index { files } ->
+            Index.run ctx.fs files
+
+        RenderText flags ->
+            RenderText.run { fs = ctx.fs, useColor = ctx.useColor } flags
+
+        RenderLcov { coverage } ->
+            RenderLcov.run ctx.fs coverage
+
+        Join flags ->
+            Join.run ctx.cp flags

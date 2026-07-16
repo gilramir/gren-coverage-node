@@ -1,0 +1,30 @@
+module Command.RenderText exposing (run)
+
+{-| `gren-coverage render text <coverage.json>` — the human-readable report.
+
+Four-state summary + worst-modules gap list, or (with `--module`) the full
+annotated `count | source` for one module. Colorized on a TTY, honours
+NO_COLOR.
+
+TODO(scaffold): port `gren-coverage-node/render-terminal.js`, decoding the
+input with `Coverage.Schema.decoder`.
+-}
+
+import Argparse.Program as Program
+import Coverage.Schema as Schema
+import FileSystem
+import FileSystem.Path exposing (Path)
+import Task exposing (Task)
+
+
+type alias Flags =
+    { coverage : Path
+    , module_ : Maybe String
+    , top : Maybe Int
+    , all : Bool
+    }
+
+
+run : { fs : FileSystem.Permission, useColor : Bool } -> Flags -> Task Program.Failure {}
+run _config _flags =
+    Task.fail (Program.ExitMessage "gren-coverage render text: not yet implemented (scaffold)")

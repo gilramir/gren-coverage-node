@@ -1,0 +1,20 @@
+module Coverage.Index exposing (run)
+
+{-| `gren-coverage index <files…>` — the coverage denominator.
+
+Parses each Gren source file via `compiler-common` and emits `ast-index.json`
+(every function and branch region) to stdout.
+
+TODO(scaffold): port the AST walk from
+`gren-coverage-node/ast-index/src/Main.gren` into this module.
+-}
+
+import Argparse.Program as Program
+import FileSystem
+import FileSystem.Path exposing (Path)
+import Task exposing (Task)
+
+
+run : FileSystem.Permission -> Array Path -> Task Program.Failure {}
+run _fs _files =
+    Task.fail (Program.ExitMessage "gren-coverage index: not yet implemented (scaffold)")

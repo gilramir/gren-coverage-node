@@ -1,0 +1,294 @@
+module Coverage.Schema exposing
+    ( Coverage, Summary, Module, Fn, Branch, Line, Pos, Tally, State(..)
+    , decoder, stateFromString, stateToString
+    )
+
+{-| The typed contract for `coverage.json` — the file `gren-coverage join`
+writes and the `render` subcommands read.
+
+This is the whole payoff of porting the renderers to Gren: the JSON handshake
+between the join step and the renderers becomes a single decoder, so a schema
+change is a compile error here instead of wrong output at runtime.
+
+The field names mirror the JSON exactly, except `module` (a Gren keyword) is
+decoded into `name`, and `never-called` into `neverCalled`.
+
+@docs Coverage, Summary, Module, Fn, Branch, Line, Pos, Tally, State
+@docs decoder, stateFromString, stateToString
+-}
+
+import Json.Decode as D exposing (Decoder)
+
+
+{-| The four states every region is classified into. See PLAN.md:
+
+  - `Hit` — executed at least once
+  - `NeverCalled` — present in the compiled JS but ran 0 times
+  - `Eliminated` — deleted by dead-code elimination (absent from the JS)
+  - `Absent` — the module never reached the sourcemap at all
+-}
+type State
+    = Hit
+    | NeverCalled
+    | Eliminated
+    | Absent
+
+
+{-| A source position, exclusive `(row, col)`. -}
+type alias Pos =
+    { row : Int
+    , col : Int
+    }
+
+
+{-| A four-state count breakdown plus its total. -}
+type alias Tally =
+    { hit : Int
+    , neverCalled : Int
+    , eliminated : Int
+    , absent : Int
+    , total : Int
+    }
+
+
+{-| One function region: its ast-index coordinates plus the join's verdict.
+`count` is `Nothing` for `Absent`/`Eliminated` (never entered the JS). -}
+type alias Fn =
+    { name : String
+    , kind : String
+    , start : Pos
+    , end : Pos
+    , state : State
+    , count : Maybe Int
+    , mapped : Int
+    }
+
+
+{-| One branch body (a `when` case or an `if`/`else` arm). `pattern` is the
+human label; `branchPoint` is the shared keyword position used to anchor LCOV
+branch blocks. -}
+type alias Branch =
+    { owner : String
+    , kind : String
+    , pattern : String
+    , branchPoint : Pos
+    , start : Pos
+    , end : Pos
+    , state : State
+    , count : Maybe Int
+    , mapped : Int
+    }
+
+
+{-| An executable source line and its hit count. -}
+type alias Line =
+    { line : Int
+    , count : Int
+    }
+
+
+{-| Everything known about one module. `name` decodes the JSON `module` field. -}
+type alias Module =
+    { name : String
+    , file : String
+    , inSourceMap : Bool
+    , functions : Array Fn
+    , branches : Array Branch
+    , lines : Array Line
+    }
+
+
+{-| The top-level tallies over the whole run. -}
+type alias Summary =
+    { functions : Tally
+    , branches : Tally
+    }
+
+
+{-| The whole `coverage.json` document. -}
+type alias Coverage =
+    { app : String
+    , summary : Summary
+    , modules : Array Module
+    }
+
+
+
+-- DECODERS
+
+
+{-| Decode a whole `coverage.json` document. -}
+decoder : Decoder Coverage
+decoder =
+    D.succeed
+        (\app summary modules ->
+            { app = app, summary = summary, modules = modules }
+        )
+        |> D.andMap (D.field "app" D.string)
+        |> D.andMap (D.field "summary" summaryDecoder)
+        |> D.andMap (D.field "modules" (D.array moduleDecoder))
+
+
+summaryDecoder : Decoder Summary
+summaryDecoder =
+    D.succeed
+        (\functions branches ->
+            { functions = functions, branches = branches }
+        )
+        |> D.andMap (D.field "functions" tallyDecoder)
+        |> D.andMap (D.field "branches" tallyDecoder)
+
+
+tallyDecoder : Decoder Tally
+tallyDecoder =
+    D.succeed
+        (\hit neverCalled eliminated absent total ->
+            { hit = hit
+            , neverCalled = neverCalled
+            , eliminated = eliminated
+            , absent = absent
+            , total = total
+            }
+        )
+        |> D.andMap (D.field "hit" D.int)
+        |> D.andMap (D.field "never-called" D.int)
+        |> D.andMap (D.field "eliminated" D.int)
+        |> D.andMap (D.field "absent" D.int)
+        |> D.andMap (D.field "total" D.int)
+
+
+moduleDecoder : Decoder Module
+moduleDecoder =
+    D.succeed
+        (\name file inSourceMap functions branches lines ->
+            { name = name
+            , file = file
+            , inSourceMap = inSourceMap
+            , functions = functions
+            , branches = branches
+            , lines = lines
+            }
+        )
+        |> D.andMap (D.field "module" D.string)
+        |> D.andMap (D.field "file" D.string)
+        |> D.andMap (D.field "inSourceMap" D.bool)
+        |> D.andMap (D.field "functions" (D.array fnDecoder))
+        |> D.andMap (D.field "branches" (D.array branchDecoder))
+        |> D.andMap (D.field "lines" (D.array lineDecoder))
+
+
+fnDecoder : Decoder Fn
+fnDecoder =
+    D.succeed
+        (\name kind start end state count mapped ->
+            { name = name
+            , kind = kind
+            , start = start
+            , end = end
+            , state = state
+            , count = count
+            , mapped = mapped
+            }
+        )
+        |> D.andMap (D.field "name" D.string)
+        |> D.andMap (D.field "kind" D.string)
+        |> D.andMap (D.field "start" posDecoder)
+        |> D.andMap (D.field "end" posDecoder)
+        |> D.andMap (D.field "state" stateDecoder)
+        |> D.andMap (D.field "count" (D.nullable D.int))
+        |> D.andMap (D.field "mapped" D.int)
+
+
+branchDecoder : Decoder Branch
+branchDecoder =
+    D.succeed
+        (\owner kind pattern branchPoint start end state count mapped ->
+            { owner = owner
+            , kind = kind
+            , pattern = pattern
+            , branchPoint = branchPoint
+            , start = start
+            , end = end
+            , state = state
+            , count = count
+            , mapped = mapped
+            }
+        )
+        |> D.andMap (D.field "owner" D.string)
+        |> D.andMap (D.field "kind" D.string)
+        |> D.andMap (D.field "pattern" D.string)
+        |> D.andMap (D.field "branchPoint" posDecoder)
+        |> D.andMap (D.field "start" posDecoder)
+        |> D.andMap (D.field "end" posDecoder)
+        |> D.andMap (D.field "state" stateDecoder)
+        |> D.andMap (D.field "count" (D.nullable D.int))
+        |> D.andMap (D.field "mapped" D.int)
+
+
+lineDecoder : Decoder Line
+lineDecoder =
+    D.succeed (\line count -> { line = line, count = count })
+        |> D.andMap (D.field "line" D.int)
+        |> D.andMap (D.field "count" D.int)
+
+
+posDecoder : Decoder Pos
+posDecoder =
+    D.succeed (\row col -> { row = row, col = col })
+        |> D.andMap (D.field "row" D.int)
+        |> D.andMap (D.field "col" D.int)
+
+
+stateDecoder : Decoder State
+stateDecoder =
+    D.string
+        |> D.andThen
+            (\raw ->
+                when stateFromString raw is
+                    Just state ->
+                        D.succeed state
+
+                    Nothing ->
+                        D.fail ("Unknown coverage state: " ++ raw)
+            )
+
+
+
+-- STATE <-> STRING
+
+
+{-| Parse a JSON state string into a [State](#State). -}
+stateFromString : String -> Maybe State
+stateFromString raw =
+    when raw is
+        "hit" ->
+            Just Hit
+
+        "never-called" ->
+            Just NeverCalled
+
+        "eliminated" ->
+            Just Eliminated
+
+        "absent" ->
+            Just Absent
+
+        _ ->
+            Nothing
+
+
+{-| Render a [State](#State) back to its JSON string form. -}
+stateToString : State -> String
+stateToString state =
+    when state is
+        Hit ->
+            "hit"
+
+        NeverCalled ->
+            "never-called"
+
+        Eliminated ->
+            "eliminated"
+
+        Absent ->
+            "absent"

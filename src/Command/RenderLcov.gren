@@ -1,0 +1,22 @@
+module Command.RenderLcov exposing (run)
+
+{-| `gren-coverage render lcov <coverage.json>` — an LCOV tracefile to stdout.
+
+For genhtml / editor gutters. Anchors `when`/`if` branches at their shared
+`branchPoint` line and disambiguates duplicate `let` function names with an
+`@row` suffix (see PLAN.md).
+
+TODO(scaffold): port `gren-coverage-node/render-lcov.js`, decoding the input
+with `Coverage.Schema.decoder`.
+-}
+
+import Argparse.Program as Program
+import Coverage.Schema as Schema
+import FileSystem
+import FileSystem.Path exposing (Path)
+import Task exposing (Task)
+
+
+run : FileSystem.Permission -> Path -> Task Program.Failure {}
+run _fs _coverage =
+    Task.fail (Program.ExitMessage "gren-coverage render lcov: not yet implemented (scaffold)")

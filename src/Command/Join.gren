@@ -1,0 +1,30 @@
+module Command.Join exposing (run)
+
+{-| `gren-coverage join --app --cov --index [--out]` — the numerator × denominator join.
+
+This is the one irreducibly-JS step: it decodes the inline v3 sourcemap and the
+V8 byte-range coverage model, then classifies each ast-index region. This module
+is a thin wrapper that shells out to `gren-coverage.js` (kept as JS on purpose —
+see PLAN.md) via `ChildProcess`.
+
+TODO(scaffold): spawn `node gren-coverage.js --app … --cov … --index … [--out …]`
+and propagate its exit code.
+-}
+
+import Argparse.Program as Program
+import ChildProcess
+import FileSystem.Path exposing (Path)
+import Task exposing (Task)
+
+
+type alias Flags =
+    { app : Path
+    , cov : Path
+    , index : Path
+    , out : Maybe Path
+    }
+
+
+run : ChildProcess.Permission -> Flags -> Task Program.Failure {}
+run _cp _flags =
+    Task.fail (Program.ExitMessage "gren-coverage join: not yet implemented (scaffold)")
