@@ -5,7 +5,7 @@
 //   node gren-coverage.js --app <cov-app> --cov <v8-dir> --index <ast-index.json>
 //                         [--out coverage.json]
 //
-// The AST index (from ast-index/) is the denominator: it lists every function
+// The AST index (from `gren-coverage index`) is the denominator: it lists every function
 // and branch region that exists in the *source*. The source map + V8 coverage
 // are the numerator: they say which of those regions actually emitted JS and
 // how often it ran. Joining the two is what makes DCE'd code visible as

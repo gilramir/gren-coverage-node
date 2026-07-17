@@ -18,13 +18,13 @@ COVDIR="${OUT}/v8cov"
 
 mkdir -p "${OUT}"
 
-echo "==> building ast-index"
-(cd "${THIS_DIR}/ast-index" && ./build.sh >/dev/null)
+echo "==> building the gren-coverage app"
+(cd "${THIS_DIR}" && ./build.sh >/dev/null)
 
 echo "==> indexing gren-format-lib/src (the denominator)"
 # find lists one path per line; feed them as separate args via xargs.
 find "${LIB}/src" -name '*.gren' | sort \
-  | xargs node "${THIS_DIR}/ast-index/ast-index-app" \
+  | xargs node "${THIS_DIR}/app" index \
   > "${OUT}/ast-index.json"
 
 echo "==> building the test harness with sourcemaps (output NOT *.js)"
@@ -43,18 +43,21 @@ if [ "${test_rc}" -ne 0 ]; then
 fi
 
 echo "==> joining"
-node "${THIS_DIR}/gren-coverage.js" \
+# `join` shells out to gren-coverage.js (the one irreducibly-JS step), which it
+# locates next to the built app. Its stdout summary is suppressed here; the
+# "wrote ..." note goes to stderr.
+node "${THIS_DIR}/app" join \
   --app "${LIB}/tests/cov-app" \
   --cov "${COVDIR}" \
   --index "${OUT}/ast-index.json" \
   --out "${OUT}/coverage.json" >/dev/null
 
 echo "==> rendering lcov -> ${OUT}/coverage.lcov"
-node "${THIS_DIR}/render-lcov.js" "${OUT}/coverage.json" > "${OUT}/coverage.lcov"
+node "${THIS_DIR}/app" render lcov "${OUT}/coverage.json" > "${OUT}/coverage.lcov"
 
 # Terminal report (the four-state view). genhtml the lcov for a browsable one:
 #   genhtml out/coverage.lcov -o out/html --branch-coverage
-node "${THIS_DIR}/render-terminal.js" "${OUT}/coverage.json"
+node "${THIS_DIR}/app" render text "${OUT}/coverage.json"
 
 # Propagate the test result so CI still fails on a failing suite.
 exit "${test_rc}"

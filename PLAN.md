@@ -6,6 +6,16 @@ targeting the `node` platform.
 The end goal is a report that answers "where are my test fixtures missing
 coverage?" — not a percentage badge.
 
+> **Update (consolidation, 2026-07-16):** the tool is now a single Gren CLI
+> (`node app <subcommand>`, built at the repo root with `./build.sh`) with four
+> subcommands — `index`, `join`, `render lcov`, `render text`. Everything below
+> that describes the old separate pieces still holds *conceptually*, but the
+> standalone `ast-index/` sub-app and the `render-*.js` scripts have been ported
+> into the Gren app (`src/Coverage/Index.gren`, `src/Command/Render*.gren`) and
+> `ast-index/` has been retired. Only `gren-coverage.js` remains JS — the `join`
+> subcommand shells out to it. `run-coverage.sh` drives the whole pipeline
+> through `node app`.
+
 ## How it works
 
 Gren compiles to JavaScript, and `gren make --sourcemaps` emits a standard v3

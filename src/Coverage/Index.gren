@@ -15,9 +15,9 @@ granularity but would swallow a whole line if rounded.
 Parse or read failures for a single file are reported on stderr and that file is
 skipped; the successfully-parsed modules are still emitted (exit stays 0).
 
-A port of `ast-index/src/Main.gren`; the AST walk and encoders are unchanged, so
-its `ast-index.json` is byte-identical. Only the entry point differs: files
-arrive as parsed `Path`s from argparse, and stdout/stderr are threaded in.
+Ported from the former standalone `ast-index/` sub-app (now retired); the AST
+walk and encoders are unchanged. Only the entry point differs: files arrive as
+parsed `Path`s from argparse, and stdout/stderr are threaded in.
 -}
 
 import Argparse.Program as Program
