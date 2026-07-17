@@ -180,7 +180,7 @@ onCommand : Node.Environment -> Context -> Command -> Task Program.Failure {}
 onCommand env ctx cmd =
     when cmd is
         Index { files } ->
-            Index.run ctx.fs files
+            Index.run { fs = ctx.fs, stdout = env.stdout, stderr = env.stderr } files
 
         RenderText flags ->
             RenderText.run { fs = ctx.fs, stdout = env.stdout, useColor = ctx.useColor } flags
