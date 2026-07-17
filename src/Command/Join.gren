@@ -3,17 +3,19 @@ module Command.Join exposing (run)
 {-| `gren-coverage join --app --cov --index [--out]` — the numerator × denominator join.
 
 This is the one irreducibly-JS step: it decodes the inline v3 sourcemap and the
-V8 byte-range coverage model, then classifies each ast-index region. This module
-is a thin wrapper that shells out to `gren-coverage.js` (kept as JS on purpose —
-see PLAN.md) via `ChildProcess`.
-
-TODO(scaffold): spawn `node gren-coverage.js --app … --cov … --index … [--out …]`
-and propagate its exit code.
+V8 byte-range coverage model, then classifies each ast-index region (see
+PLAN.md for why that stays JS). This module is a thin wrapper that shells out to
+`gren-coverage.js` — which lives next to the built `app` — forwards its stdout
+and stderr verbatim, and propagates its exit code.
 -}
 
 import Argparse.Program as Program
+import Array
+import Bytes exposing (Bytes)
 import ChildProcess
-import FileSystem.Path exposing (Path)
+import FileSystem.Path as Path exposing (Path)
+import Stream exposing (Writable)
+import Stream.Log
 import Task exposing (Task)
 
 
@@ -25,6 +27,57 @@ type alias Flags =
     }
 
 
-run : ChildProcess.Permission -> Flags -> Task Program.Failure {}
-run _cp _flags =
-    Task.fail (Program.ExitMessage "gren-coverage join: not yet implemented (scaffold)")
+type alias Config =
+    { cp : ChildProcess.Permission
+    , stdout : Writable Bytes
+    , stderr : Writable Bytes
+    , scriptPath : Path
+    }
+
+
+run : Config -> Flags -> Task Program.Failure {}
+run config flags =
+    let
+        args =
+            Array.flatten
+                [ [ Path.toPosixString config.scriptPath ]
+                , [ "--app", Path.toPosixString flags.app ]
+                , [ "--cov", Path.toPosixString flags.cov ]
+                , [ "--index", Path.toPosixString flags.index ]
+                , when flags.out is
+                    Just out ->
+                        [ "--out", Path.toPosixString out ]
+
+                    Nothing ->
+                        []
+                ]
+
+        -- NoShell: exec `node` directly, so paths with spaces need no quoting.
+        -- Bump the stream cap well past the join's summary output.
+        runOptions =
+            { ChildProcess.defaultRunOptions
+                | shell = ChildProcess.NoShell
+                , maximumBytesWrittenToStreams = 64 * 1024 * 1024
+            }
+    in
+    ChildProcess.run config.cp "node" args runOptions
+        |> Task.andThen
+            (\ok -> forward config ok.stdout ok.stderr)
+        |> Task.onError
+            (\failure ->
+                when failure is
+                    ChildProcess.ProgramError err ->
+                        forward config err.stdout err.stderr
+                            |> Task.andThen (\_ -> Task.fail (Program.ExitValue err.exitCode))
+
+                    ChildProcess.InitError err ->
+                        Task.fail
+                            (Program.ExitMessage ("could not run " ++ err.program ++ ": " ++ err.errorCode))
+            )
+
+
+{-| Re-emit the child's captured stdout/stderr onto our own, byte for byte. -}
+forward : Config -> Bytes -> Bytes -> Task x {}
+forward config outBytes errBytes =
+    Stream.Log.bytes config.stdout outBytes
+        |> Task.andThen (\_ -> Stream.Log.bytes config.stderr errBytes)

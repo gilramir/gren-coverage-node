@@ -23,7 +23,7 @@ import Command.RenderText as RenderText
 import Coverage.Index as Index
 import Dict
 import FileSystem
-import FileSystem.Path exposing (Path)
+import FileSystem.Path as Path exposing (Path)
 import Init
 import Node
 import Task exposing (Task)
@@ -189,4 +189,20 @@ onCommand env ctx cmd =
             RenderLcov.run { fs = ctx.fs, stdout = env.stdout } coverage
 
         Join flags ->
-            Join.run ctx.cp flags
+            let
+                -- gren-coverage.js sits next to the built `app`.
+                scriptPath =
+                    when Path.parentPath env.applicationPath is
+                        Just dir ->
+                            Path.appendPosixString "gren-coverage.js" dir
+
+                        Nothing ->
+                            Path.fromPosixString "gren-coverage.js"
+            in
+            Join.run
+                { cp = ctx.cp
+                , stdout = env.stdout
+                , stderr = env.stderr
+                , scriptPath = scriptPath
+                }
+                flags
