@@ -2,21 +2,300 @@ module Command.RenderLcov exposing (run)
 
 {-| `gren-coverage render lcov <coverage.json>` — an LCOV tracefile to stdout.
 
-For genhtml / editor gutters. Anchors `when`/`if` branches at their shared
-`branchPoint` line and disambiguates duplicate `let` function names with an
-`@row` suffix (see PLAN.md).
+    node app render lcov coverage.json > coverage.lcov
+    genhtml coverage.lcov -o html --branch-coverage
 
-TODO(scaffold): port `gren-coverage-node/render-lcov.js`, decoding the input
-with `Coverage.Schema.decoder`.
+`DA`/`FN`/`FNDA`/`BRDA` records carry the per-line, per-function and per-branch
+hit data the join already computed, buying editor gutters and `genhtml` for
+free. LCOV cannot express the four states — `eliminated` and `never-called` both
+read as "0 executions" here; the terminal report keeps that distinction.
+coverage.json stays the source of truth.
+
+Two LCOV quirks handled below (see `render-lcov.js`, the JS this ports):
+
+  - LCOV counts a branch block only when >= 2 alternatives share ONE line, so
+    every branch of a `when`/`if` is anchored at its shared `branchPoint` line
+    rather than at each branch body's own line.
+  - LCOV keys functions by name within a file, so duplicate `let` names (the
+    many `inner`/`go`/`loop` helpers) would collapse; we disambiguate with `@row`.
+
 -}
 
 import Argparse.Program as Program
-import Coverage.Schema as Schema
+import Array
+import Bytes exposing (Bytes)
+import Char
+import Coverage.Schema as Schema exposing (Branch, Fn, Module)
+import Dict
 import FileSystem
-import FileSystem.Path exposing (Path)
+import FileSystem.Path as Path exposing (Path)
+import Json.Decode as D
+import Stream exposing (Writable)
+import Stream.Log
 import Task exposing (Task)
 
 
-run : FileSystem.Permission -> Path -> Task Program.Failure {}
-run _fs _coverage =
-    Task.fail (Program.ExitMessage "gren-coverage render lcov: not yet implemented (scaffold)")
+run : { fs : FileSystem.Permission, stdout : Writable Bytes } -> Path -> Task Program.Failure {}
+run config coveragePath =
+    FileSystem.readFile config.fs coveragePath
+        |> Task.mapError
+            (\err ->
+                Program.ExitMessage
+                    (Path.toPosixString coveragePath ++ ": " ++ FileSystem.errorToString err)
+            )
+        |> Task.andThen
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Nothing ->
+                        Task.fail (Program.ExitMessage "coverage.json is not valid UTF-8")
+
+                    Just text ->
+                        when D.decodeString Schema.decoder text is
+                            Err err ->
+                                Task.fail
+                                    (Program.ExitMessage
+                                        ("Could not decode coverage.json: " ++ D.errorToString err)
+                                    )
+
+                            Ok coverage ->
+                                Stream.Log.line config.stdout (renderLcov coverage)
+            )
+
+
+
+-- RENDER
+
+
+renderLcov : Schema.Coverage -> String
+renderLcov coverage =
+    let
+        tn =
+            sanitizeTN coverage.app
+    in
+    coverage.modules
+        |> Array.map (renderModule tn)
+        |> Array.flatten
+        |> String.join "\n"
+
+
+{-| LCOV testnames may only contain word characters (`[A-Za-z0-9_]`). -}
+sanitizeTN : String -> String
+sanitizeTN =
+    String.map
+        (\c ->
+            if Char.isAlphaNum c || c == '_' then
+                c
+
+            else
+                '_'
+        )
+
+
+renderModule : String -> Module -> Array String
+renderModule tn m =
+    let
+        names =
+            uniqueNames m.functions
+
+        fnDefLines =
+            Array.map2
+                (\f name -> "FN:" ++ String.fromInt f.start.row ++ "," ++ name)
+                m.functions
+                names
+
+        fnDataLines =
+            Array.map2
+                (\f name -> "FNDA:" ++ String.fromInt (countOr0 f.count) ++ "," ++ name)
+                m.functions
+                names
+
+        fnHit =
+            Array.foldl
+                (\f acc ->
+                    if countOr0 f.count > 0 then
+                        acc + 1
+
+                    else
+                        acc
+                )
+                0
+                m.functions
+
+        -- Branch blocks (one per `when`/`if`), in first-appearance order, with
+        -- only the reached ones kept — a fully eliminated/absent block has no
+        -- coverage to show and emits nothing.
+        reachedBlocks =
+            m.branches
+                |> groupBranches
+                |> Array.keepIf (\blk -> Array.any isJust blk.items)
+
+        brdaLines =
+            reachedBlocks
+                |> Array.indexedMap
+                    (\block blk ->
+                        Array.indexedMap
+                            (\idx c ->
+                                "BRDA:"
+                                    ++ String.fromInt blk.row
+                                    ++ ","
+                                    ++ String.fromInt block
+                                    ++ ","
+                                    ++ String.fromInt idx
+                                    ++ ","
+                                    ++ String.fromInt (countOr0 c)
+                            )
+                            blk.items
+                    )
+                |> Array.flatten
+
+        brf =
+            Array.foldl (\blk acc -> acc + Array.length blk.items) 0 reachedBlocks
+
+        brHit =
+            Array.foldl
+                (\blk acc ->
+                    acc + Array.length (Array.keepIf (\c -> countOr0 c > 0) blk.items)
+                )
+                0
+                reachedBlocks
+
+        -- DA lines: the mapped lines, plus a synthetic count for each reached
+        -- branch-point line that has no mapped segment of its own (the `when`
+        -- ran sum(branch counts) times). A Dict keeps these sorted by line.
+        baseDa =
+            Array.foldl (\l d -> Dict.set l.line l.count d) Dict.empty m.lines
+
+        daLines =
+            Array.foldl
+                (\blk d ->
+                    if Dict.member blk.row d then
+                        d
+
+                    else
+                        Dict.set blk.row (sumItems blk.items) d
+                )
+                baseDa
+                reachedBlocks
+
+        daRecords =
+            Dict.foldl
+                (\line count acc -> Array.pushLast ("DA:" ++ String.fromInt line ++ "," ++ String.fromInt count) acc)
+                []
+                daLines
+
+        lHit =
+            Dict.foldl
+                (\_ count acc ->
+                    if count > 0 then
+                        acc + 1
+
+                    else
+                        acc
+                )
+                0
+                daLines
+    in
+    Array.flatten
+        [ [ "TN:" ++ tn
+          , "SF:" ++ m.file
+          ]
+        , fnDefLines
+        , fnDataLines
+        , [ "FNF:" ++ String.fromInt (Array.length m.functions)
+          , "FNH:" ++ String.fromInt fnHit
+          ]
+        , brdaLines
+        , [ "BRF:" ++ String.fromInt brf
+          , "BRH:" ++ String.fromInt brHit
+          ]
+        , daRecords
+        , [ "LF:" ++ String.fromInt (Dict.count daLines)
+          , "LH:" ++ String.fromInt lHit
+          , "end_of_record"
+          ]
+        ]
+
+
+{-| Give every function a name unique within its module (append `@row` to any
+name that repeats), aligned by index with the input array. -}
+uniqueNames : Array Fn -> Array String
+uniqueNames functions =
+    let
+        counts =
+            Array.foldl
+                (\f d -> Dict.update f.name (\n -> Just (1 + Maybe.withDefault 0 n)) d)
+                Dict.empty
+                functions
+    in
+    Array.map
+        (\f ->
+            if (Dict.get f.name counts |> Maybe.withDefault 0) > 1 then
+                f.name ++ "@" ++ String.fromInt f.start.row
+
+            else
+                f.name
+        )
+        functions
+
+
+{-| Group branches into blocks keyed by their shared branch point, preserving
+the order each block first appears (LCOV block numbering follows this order). -}
+groupBranches : Array Branch -> Array { row : Int, items : Array (Maybe Int) }
+groupBranches branches =
+    let
+        keyOf b =
+            String.fromInt b.branchPoint.row ++ ":" ++ String.fromInt b.branchPoint.col
+
+        orderedKeys =
+            Array.foldl
+                (\b acc ->
+                    let
+                        k =
+                            keyOf b
+                    in
+                    if Array.any (\e -> e.key == k) acc then
+                        acc
+
+                    else
+                        Array.pushLast { row = b.branchPoint.row, key = k } acc
+                )
+                []
+                branches
+    in
+    Array.map
+        (\e ->
+            { row = e.row
+            , items =
+                Array.foldl
+                    (\b acc ->
+                        if keyOf b == e.key then
+                            Array.pushLast b.count acc
+
+                        else
+                            acc
+                    )
+                    []
+                    branches
+            }
+        )
+        orderedKeys
+
+
+countOr0 : Maybe Int -> Int
+countOr0 =
+    Maybe.withDefault 0
+
+
+sumItems : Array (Maybe Int) -> Int
+sumItems items =
+    Array.foldl (\c acc -> acc + countOr0 c) 0 items
+
+
+isJust : Maybe a -> Bool
+isJust m =
+    when m is
+        Just _ ->
+            True
+
+        Nothing ->
+            False

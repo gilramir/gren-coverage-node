@@ -177,7 +177,7 @@ main =
 
 
 onCommand : Node.Environment -> Context -> Command -> Task Program.Failure {}
-onCommand _env ctx cmd =
+onCommand env ctx cmd =
     when cmd is
         Index { files } ->
             Index.run ctx.fs files
@@ -186,7 +186,7 @@ onCommand _env ctx cmd =
             RenderText.run { fs = ctx.fs, useColor = ctx.useColor } flags
 
         RenderLcov { coverage } ->
-            RenderLcov.run ctx.fs coverage
+            RenderLcov.run { fs = ctx.fs, stdout = env.stdout } coverage
 
         Join flags ->
             Join.run ctx.cp flags
