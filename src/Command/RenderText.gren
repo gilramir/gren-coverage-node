@@ -2,18 +2,31 @@ module Command.RenderText exposing (run)
 
 {-| `gren-coverage render text <coverage.json>` — the human-readable report.
 
-Four-state summary + worst-modules gap list, or (with `--module`) the full
-annotated `count | source` for one module. Colorized on a TTY, honours
-NO_COLOR.
+    node app render text coverage.json            # summary + worst modules
+    node app render text coverage.json --top 5    # more modules
+    node app render text coverage.json --module Formatter.Render.BinopLayout
 
-TODO(scaffold): port `gren-coverage-node/render-terminal.js`, decoding the
-input with `Coverage.Schema.decoder`.
+The headline number is not a percentage — it is "which functions and `when`/`if`
+branches are reachable but never exercised". Those are the fixtures to write.
+
+A faithful port of `render-terminal.js`, decoding coverage.json with
+`Coverage.Schema`. Colorized on a TTY, honours NO_COLOR (both folded into
+`useColor`, computed once in Main).
 -}
 
 import Argparse.Program as Program
-import Coverage.Schema as Schema
+import Array
+import Bytes exposing (Bytes)
+import Char
+import Coverage.Schema as Schema exposing (Branch, Coverage, Fn, Module, State(..), Tally)
+import Dict
 import FileSystem
-import FileSystem.Path exposing (Path)
+import FileSystem.Path as Path exposing (Path)
+import Json.Decode as D
+import Math
+import Set
+import Stream exposing (Writable)
+import Stream.Log
 import Task exposing (Task)
 
 
@@ -25,6 +38,461 @@ type alias Flags =
     }
 
 
-run : { fs : FileSystem.Permission, useColor : Bool } -> Flags -> Task Program.Failure {}
-run _config _flags =
-    Task.fail (Program.ExitMessage "gren-coverage render text: not yet implemented (scaffold)")
+type alias Config =
+    { fs : FileSystem.Permission
+    , stdout : Writable Bytes
+    , useColor : Bool
+    }
+
+
+run : Config -> Flags -> Task Program.Failure {}
+run config flags =
+    FileSystem.readFile config.fs flags.coverage
+        |> Task.mapError
+            (\err ->
+                Program.ExitMessage
+                    (Path.toPosixString flags.coverage ++ ": " ++ FileSystem.errorToString err)
+            )
+        |> Task.andThen
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Nothing ->
+                        Task.fail (Program.ExitMessage "coverage.json is not valid UTF-8")
+
+                    Just text ->
+                        when D.decodeString Schema.decoder text is
+                            Err err ->
+                                Task.fail
+                                    (Program.ExitMessage
+                                        ("Could not decode coverage.json: " ++ D.errorToString err)
+                                    )
+
+                            Ok coverage ->
+                                report config flags coverage
+            )
+
+
+
+-- COLOR
+
+
+type alias Colors =
+    { red : String -> String
+    , grn : String -> String
+    , gray : String -> String
+    , dim : String -> String
+    , bold : String -> String
+    }
+
+
+esc : String
+esc =
+    String.fromChar (Char.fromCode 27)
+
+
+paint : Bool -> String -> String -> String
+paint useColor code s =
+    if useColor then
+        esc ++ "[" ++ code ++ "m" ++ s ++ esc ++ "[0m"
+
+    else
+        s
+
+
+mkColors : Bool -> Colors
+mkColors useColor =
+    { red = paint useColor "31"
+    , grn = paint useColor "32"
+    , gray = paint useColor "90"
+    , dim = paint useColor "2"
+    , bold = paint useColor "1"
+    }
+
+
+
+-- REPORT DISPATCH
+
+
+report : Config -> Flags -> Coverage -> Task Program.Failure {}
+report config flags coverage =
+    let
+        c =
+            mkColors config.useColor
+
+        summary =
+            summaryLines c coverage
+    in
+    when flags.module_ is
+        Just name ->
+            when Array.findFirst (\m -> m.name == name) coverage.modules is
+                Nothing ->
+                    -- Faithful to the JS: the summary is printed first, then
+                    -- the error on stderr with a non-zero exit.
+                    writeLines config.stdout summary
+                        |> Task.andThen (\_ -> Task.fail (Program.ExitMessage ("no such module: " ++ name)))
+
+                Just found ->
+                    readSource config.fs found.value.file
+                        |> Task.andThen
+                            (\src ->
+                                writeLines config.stdout
+                                    (Array.flatten [ summary, annotatedLines c found.value src ])
+                            )
+
+        Nothing ->
+            let
+                ranked =
+                    coverage.modules
+                        |> Array.keepIf (\m -> gapCount m > 0)
+                        |> Array.sortBy (\m -> negate (gapCount m))
+            in
+            if Array.isEmpty ranked then
+                writeLines config.stdout
+                    (Array.flatten
+                        [ summary
+                        , [ "\n" ++ c.grn "No never-called functions or branches. 🎉" ]
+                        ]
+                    )
+
+            else
+                let
+                    shownModules =
+                        if flags.all then
+                            ranked
+
+                        else
+                            Array.takeFirst (Maybe.withDefault 3 flags.top) ranked
+                in
+                Task.sequence (Array.map (\m -> readSource config.fs m.file) shownModules)
+                    |> Task.andThen
+                        (\sources ->
+                            let
+                                header =
+                                    [ "\n"
+                                        ++ c.bold "Untested code — reachable but no fixture exercises it:"
+                                        ++ c.dim ("  (" ++ String.fromInt (Array.length ranked) ++ " modules with gaps)")
+                                    ]
+
+                                body =
+                                    Array.map2 (\m src -> moduleGapLines c m src) shownModules sources
+                                        |> Array.flatten
+
+                                moreLine =
+                                    if not flags.all && Array.length ranked > Array.length shownModules then
+                                        [ c.dim
+                                            ("\n  … "
+                                                ++ String.fromInt (Array.length ranked - Array.length shownModules)
+                                                ++ " more modules with gaps (use --all or --top N)"
+                                            )
+                                        ]
+
+                                    else
+                                        []
+
+                                footer =
+                                    [ c.dim
+                                        ("\n  annotate one module fully:  node render-terminal.js "
+                                            ++ Path.toPosixString flags.coverage
+                                            ++ " --module <Name>"
+                                        )
+                                    ]
+                            in
+                            writeLines config.stdout
+                                (Array.flatten [ summary, header, body, moreLine, footer ])
+                        )
+
+
+
+-- SUMMARY
+
+
+summaryLines : Colors -> Coverage -> Array String
+summaryLines c coverage =
+    [ "\n" ++ c.bold "gren-coverage" ++ " — " ++ coverage.app ++ "\n"
+    , summaryRow c "functions" coverage.summary.functions
+    , summaryRow c "branches" coverage.summary.branches
+    ]
+
+
+summaryRow : Colors -> String -> Tally -> String
+summaryRow c label t =
+    c.bold (String.padRight 10 ' ' label)
+        ++ c.grn (String.padLeft 5 ' ' (String.fromInt t.hit) ++ " hit")
+        ++ "  "
+        ++ c.red (String.padLeft 4 ' ' (String.fromInt t.neverCalled) ++ " never")
+        ++ "  "
+        ++ c.gray (String.padLeft 4 ' ' (String.fromInt t.eliminated) ++ " elim")
+        ++ "  "
+        ++ c.dim (String.padLeft 4 ' ' (String.fromInt t.absent) ++ " absent")
+        ++ "  "
+        ++ String.padLeft 5 ' ' (String.fromInt t.total)
+        ++ " total   "
+        ++ c.bold (String.padLeft 5 ' ' (toFixed1 (pct t)) ++ "%")
+        ++ " of reachable"
+
+
+pct : Tally -> Float
+pct t =
+    let
+        denom =
+            t.total - t.absent - t.eliminated
+    in
+    if denom /= 0 then
+        100 * toFloat t.hit / toFloat denom
+
+    else
+        100
+
+
+{-| Format a non-negative float to exactly one decimal place, like JS
+`Number.prototype.toFixed(1)`. -}
+toFixed1 : Float -> String
+toFixed1 x =
+    let
+        n =
+            Math.round (x * 10)
+
+        whole =
+            n // 10
+
+        frac =
+            n - (whole * 10)
+    in
+    String.fromInt whole ++ "." ++ String.fromInt frac
+
+
+
+-- GAP LIST (one module)
+
+
+gapCount : Module -> Int
+gapCount m =
+    Array.length (Array.keepIf (\f -> f.state == NeverCalled) m.functions)
+        + Array.length (Array.keepIf (\b -> b.state == NeverCalled) m.branches)
+
+
+{-| Cap each list so a big dispatch module stays readable; full detail is one
+`--module <Name>` away. -}
+cap : Int
+cap =
+    12
+
+
+cappedLines : Colors -> String -> Array a -> (a -> String) -> Array String
+cappedLines c moduleName arr renderFn =
+    let
+        rendered =
+            Array.map renderFn (Array.takeFirst cap arr)
+
+        moreLines =
+            if Array.length arr > cap then
+                [ c.dim
+                    ("         … "
+                        ++ String.fromInt (Array.length arr - cap)
+                        ++ " more (see --module "
+                        ++ moduleName
+                        ++ ")"
+                    )
+                ]
+
+            else
+                []
+    in
+    Array.flatten [ rendered, moreLines ]
+
+
+moduleGapLines : Colors -> Module -> Maybe (Array String) -> Array String
+moduleGapLines c m src =
+    let
+        neverFns =
+            Array.keepIf (\f -> f.state == NeverCalled) m.functions
+
+        elimFns =
+            Array.keepIf (\f -> f.state == Eliminated) m.functions
+
+        neverBrs =
+            Array.keepIf (\b -> b.state == NeverCalled) m.branches
+
+        hitFns =
+            Array.length (Array.keepIf (\f -> f.state == Hit) m.functions)
+
+        hitBrs =
+            Array.length (Array.keepIf (\b -> b.state == Hit) m.branches)
+
+        header1 =
+            "\n" ++ c.bold m.name ++ c.dim ("  " ++ m.file)
+
+        header2 =
+            c.dim "  functions "
+                ++ c.grn (String.fromInt hitFns ++ " hit")
+                ++ " "
+                ++ c.red (String.fromInt (Array.length neverFns) ++ " never")
+                ++ " "
+                ++ c.gray (String.fromInt (Array.length elimFns) ++ " elim")
+                ++ c.dim "   branches "
+                ++ c.grn (String.fromInt hitBrs ++ " hit")
+                ++ " "
+                ++ c.red (String.fromInt (Array.length neverBrs) ++ " never")
+
+        renderNeverFn f =
+            "  "
+                ++ c.red "never  "
+                ++ c.bold (String.padRight 34 ' ' (f.kind ++ " " ++ f.name))
+                ++ c.dim (":" ++ String.fromInt f.start.row)
+                ++ (when src is
+                        Just _ ->
+                            "  " ++ c.dim (snippet src f.start.row)
+
+                        Nothing ->
+                            ""
+                   )
+
+        renderElimFn f =
+            "  "
+                ++ c.gray "elim   "
+                ++ c.gray (String.padRight 34 ' ' (f.kind ++ " " ++ f.name))
+                ++ c.dim "(removed by DCE)"
+
+        renderNeverBr b =
+            let
+                label =
+                    if b.kind == "if" then
+                        if b.pattern == "else" then
+                            "else"
+
+                        else
+                            "if " ++ c.bold b.pattern
+
+                    else
+                        "when " ++ c.bold b.pattern
+            in
+            "  "
+                ++ c.red "never  "
+                ++ label
+                ++ " "
+                ++ c.dim ("in " ++ b.owner)
+                ++ c.dim ("  :" ++ String.fromInt b.start.row)
+    in
+    Array.flatten
+        [ [ header1, header2 ]
+        , cappedLines c m.name neverFns renderNeverFn
+        , cappedLines c m.name elimFns renderElimFn
+        , cappedLines c m.name neverBrs renderNeverBr
+        ]
+
+
+snippet : Maybe (Array String) -> Int -> String
+snippet src row =
+    when src is
+        Just lines ->
+            when Array.get (row - 1) lines is
+                Just line ->
+                    String.slice 0 76 (String.trim line)
+
+                Nothing ->
+                    ""
+
+        Nothing ->
+            ""
+
+
+
+-- ANNOTATED SOURCE (one module)
+
+
+annotatedLines : Colors -> Module -> Maybe (Array String) -> Array String
+annotatedLines c m src =
+    let
+        header =
+            "\n" ++ c.bold m.name ++ c.dim ("  " ++ m.file) ++ "\n"
+    in
+    when src is
+        Nothing ->
+            [ header, c.dim ("  (source unavailable at " ++ m.file ++ ")") ]
+
+        Just lines ->
+            let
+                count =
+                    Array.foldl (\l d -> Dict.set l.line l.count d) Dict.empty m.lines
+
+                dead =
+                    m.functions
+                        |> Array.keepIf (\f -> f.state == Eliminated)
+                        |> Array.map (\f -> Array.range f.start.row f.end.row)
+                        |> Array.flatten
+                        |> Set.fromArray
+
+                w =
+                    Array.foldl
+                        (\l acc -> max acc (String.unitLength (String.fromInt l.count)))
+                        3
+                        m.lines
+
+                body =
+                    Array.indexedMap
+                        (\i lineText ->
+                            let
+                                row =
+                                    i + 1
+
+                                gutter =
+                                    if Dict.member row count then
+                                        if (Maybe.withDefault 0 (Dict.get row count)) > 0 then
+                                            c.grn (String.padLeft w ' ' (String.fromInt (Maybe.withDefault 0 (Dict.get row count))))
+
+                                        else
+                                            c.red (String.padLeft w ' ' "0")
+
+                                    else if Set.member row dead then
+                                        c.gray (String.padLeft w ' ' "x")
+
+                                    else
+                                        String.repeat w " "
+
+                                text =
+                                    if Dict.get row count == Just 0 then
+                                        c.red lineText
+
+                                    else if Set.member row dead then
+                                        c.gray lineText
+
+                                    else
+                                        lineText
+                            in
+                            c.dim (String.padLeft 5 ' ' (String.fromInt row))
+                                ++ " "
+                                ++ gutter
+                                ++ " "
+                                ++ c.dim "|"
+                                ++ " "
+                                ++ text
+                        )
+                        lines
+            in
+            Array.flatten [ [ header ], body ]
+
+
+
+-- IO HELPERS
+
+
+{-| Read a module's source, tolerating a path that no longer resolves (→ Nothing).
+Splits on `\n` exactly (not `String.lines`) to match the JS `.split("\n")`. -}
+readSource : FileSystem.Permission -> String -> Task x (Maybe (Array String))
+readSource fs pathStr =
+    FileSystem.readFile fs (Path.fromPosixString pathStr)
+        |> Task.andThen
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Just text ->
+                        Task.succeed (Just (String.split "\n" text))
+
+                    Nothing ->
+                        Task.succeed Nothing
+            )
+        |> Task.onError (\_ -> Task.succeed Nothing)
+
+
+writeLines : Writable Bytes -> Array String -> Task x {}
+writeLines stdout lines =
+    Stream.Log.line stdout (String.join "\n" lines)

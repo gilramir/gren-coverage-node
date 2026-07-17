@@ -183,7 +183,7 @@ onCommand env ctx cmd =
             Index.run ctx.fs files
 
         RenderText flags ->
-            RenderText.run { fs = ctx.fs, useColor = ctx.useColor } flags
+            RenderText.run { fs = ctx.fs, stdout = env.stdout, useColor = ctx.useColor } flags
 
         RenderLcov { coverage } ->
             RenderLcov.run { fs = ctx.fs, stdout = env.stdout } coverage
