@@ -9,7 +9,7 @@ module Command.RenderText exposing (run)
 The headline number is not a percentage — it is "which functions and `when`/`if`
 branches are reachable but never exercised". Those are the fixtures to write.
 
-A faithful port of `render-terminal.js`, decoding coverage.json with
+A faithful port of the former `render-terminal.js`, decoding coverage.json with
 `Coverage.Schema`. Colorized on a TTY, honours NO_COLOR (both folded into
 `useColor`, computed once in Main).
 -}
@@ -191,7 +191,7 @@ report config flags coverage =
 
                                 footer =
                                     [ c.dim
-                                        ("\n  annotate one module fully:  node render-terminal.js "
+                                        ("\n  annotate one module fully:  gren-coverage render text "
                                             ++ Path.toPosixString flags.coverage
                                             ++ " --module <Name>"
                                         )

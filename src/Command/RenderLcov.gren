@@ -11,7 +11,7 @@ free. LCOV cannot express the four states — `eliminated` and `never-called` bo
 read as "0 executions" here; the terminal report keeps that distinction.
 coverage.json stays the source of truth.
 
-Two LCOV quirks handled below (see `render-lcov.js`, the JS this ports):
+Two LCOV quirks handled below (ported from the former `render-lcov.js`):
 
   - LCOV counts a branch block only when >= 2 alternatives share ONE line, so
     every branch of a `when`/`if` is anchored at its shared `branchPoint` line
