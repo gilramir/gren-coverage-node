@@ -39,18 +39,7 @@ source map back to your Gren code, and compares that against every function and
 branch in your source (which it finds by reading your project). The result is the
 four-state report above.
 
-```
-  gren make --sourcemaps ──► app + source map
-     NODE_V8_COVERAGE=dir node app ──► run counts   (what actually ran)
-                                             │
-       your gren.json ───────────► [ join ] ◄┘
-             read every function/branch (the total), follow the
-             source map, match run counts to your source, and
-             label each region → coverage.json
-                                  │
-                    ┌─────────────┴─────────────┐
-              [ render text ]             [ render lcov ]
-```
+![Coverage pipeline](docs/diagrams/coverage-pipeline.png)
 
 ## Install
 
@@ -58,7 +47,7 @@ You need [devbox](https://www.jetify.com/devbox) (it pins Node and the Gren
 compiler for you). Build the tool once:
 
 ```bash
-./build.sh          # produces ./app, run with: node app <command>
+devbox run build    # produces ./app, run with: node app <command>
 node app --help
 ```
 
@@ -124,12 +113,49 @@ Print a human-readable report to the terminal:
 node /path/to/app render text coverage.json
 ```
 
+For example, running this against `gren-format-lib`'s own test suite prints
+(abridged):
+
+```
+gren-coverage — cov-app
+
+functions   844 hit     1 never    13 elim    55 absent    913 total    99.9% of reachable
+branches   1304 hit   284 never    40 elim   131 absent   1759 total    82.1% of reachable
+
+Untested code — reachable but no fixture exercises it:  (21 modules with gaps)
+
+Formatter.Logical.InsertExpressions  src/Formatter/Logical/InsertExpressions.gren
+  functions 107 hit 1 never 0 elim   branches 118 hit 33 never
+  never  let innerOpNode                   :114  innerOpNode =
+  never  when Nothing in insertAccess  :416
+  never  if Array.isEmpty fieldNodes in insertUpdate  :500
+         … and more (see --module Formatter.Logical.InsertExpressions)
+
+  … 20 more modules with gaps (use --all or --top N)
+
+  annotate one module fully:  render text coverage.json --module <Name>
+```
+
+The `hit / never / elim / absent` columns are the four states from the top of
+this README: `never` is code that ran zero times — the tests worth writing —
+while `elim` (dead-code-eliminated) stays counted instead of silently vanishing.
+
 Or produce a standard **LCOV** file, which editors and `genhtml` understand:
 
 ```bash
 node /path/to/app render lcov coverage.json > coverage.lcov
 genhtml coverage.lcov -o html --branch-coverage    # browsable HTML report
 ```
+
+`genhtml` gives you an overview page with the overall rates and a per-directory
+table:
+
+![LCOV HTML overview](docs/diagrams/lcov-html-main.png)
+
+Click into a file to see it line by line — hit counts in the gutter, red for a
+line that never ran, and branch markers for each `when` / `if`:
+
+![LCOV HTML file view](docs/diagrams/lcov-html-detail.png)
 
 ## Commands
 

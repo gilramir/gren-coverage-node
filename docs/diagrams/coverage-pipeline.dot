@@ -1,0 +1,55 @@
+digraph CoveragePipeline {
+    rankdir=TB;
+    bgcolor="white";
+    fontname="Helvetica,Arial,sans-serif";
+    fontsize=12;
+    ranksep=0.45;
+    nodesep=0.55;
+
+    node [fontname="Helvetica,Arial,sans-serif", fontsize=11];
+    edge [fontname="Helvetica,Arial,sans-serif", fontsize=10, color="#555555"];
+
+    // Data nodes
+    node [shape=box, style="rounded,filled", fillcolor="#eef2f7", color="#7a95b8", fontcolor="#1c2b3a"];
+    program  [label="your program\n(Main + its modules)"];
+    covApp   [label="cov-app\n(+ inline source map)"];
+    counts   [label="V8 run counts\n(what actually ran)"];
+    sources  [label="your project sources\n(found via gren.json)"];
+    coverage [label="coverage.json\n(four-state labels)"];
+
+    // Process nodes (external tools: gren + node)
+    node [shape=box, style="rounded,filled", fillcolor="#dbe9f7", color="#3f6fa8", fontcolor="#1c2b3a"];
+    build      [label="gren make\n--sourcemaps"];
+    run        [label="run under\nNODE_V8_COVERAGE"];
+
+    // This tool's own commands (gren-coverage) — light purple to stand out
+    node [shape=box, style="rounded,filled", fillcolor="#e8ddf7", color="#7a5fa8", fontcolor="#2b1c3a"];
+    join       [label="join\nindex every function/branch (the total),\nfollow the source map, and match the\nrun counts back to your source"];
+    renderText [label="render text"];
+    renderLcov [label="render lcov"];
+
+    // Terminal output nodes
+    node [shape=box, style="rounded,filled", fillcolor="#d9f2df", color="#4c9a5b", fontcolor="#1f4d2c"];
+    term     [label="terminal report\n(the four states)"];
+    lcovFile [label="LCOV file\n(genhtml, editor gutters)"];
+
+    // Main flow
+    program -> build;
+    build   -> covApp;
+    covApp  -> run;
+    run     -> counts;
+    counts  -> join;
+    sources -> join;
+    join    -> coverage;
+    coverage -> renderText;
+    coverage -> renderLcov;
+    renderText -> term;
+    renderLcov -> lcovFile;
+
+    // The source map reaches join from the app itself, not from the counts.
+    covApp -> join [style=dashed, label="source map", constraint=false];
+
+    { rank=same; counts; sources }
+    { rank=same; renderText; renderLcov }
+    { rank=same; term; lcovFile }
+}
