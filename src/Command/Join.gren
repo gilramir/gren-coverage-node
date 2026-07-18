@@ -1,18 +1,24 @@
 module Command.Join exposing (run)
 
-{-| `gren-coverage join --app --cov --index [--out]` — the numerator × denominator join.
+{-| `gren-coverage join --app --cov [--src] [--out]` — the numerator × denominator join.
 
-This is the one irreducibly-JS step: it decodes the inline v3 sourcemap and the
-V8 byte-range coverage model, then classifies each ast-index region (see
-PLAN.md for why that stays JS). This module is a thin wrapper that shells out to
-`gren-coverage.js` — which lives next to the built `app` — forwards its stdout
-and stderr verbatim, and propagates its exit code.
+`join` builds the coverage *denominator* itself: it indexes the project's
+sources (the `--src` project root, or the one discovered from the current
+directory) into an ast-index in-process, then hands that plus the V8 data to the
+one irreducibly-JS step. That step decodes the inline v3 sourcemap and the V8
+byte-range coverage model and classifies each region (see PLAN.md for why it
+stays JS); it lives in `gren-coverage.js`, next to the built `app`, and reads its
+index from a file. So this module writes the freshly-built index to a temporary
+file, shells out to the JS engine, forwards its stdout/stderr and exit code
+verbatim, and removes the temp file afterwards.
 -}
 
 import Argparse.Program as Program
 import Array
 import Bytes exposing (Bytes)
 import ChildProcess
+import Coverage.Index as Index
+import FileSystem
 import FileSystem.Path as Path exposing (Path)
 import Stream exposing (Writable)
 import Stream.Log
@@ -22,28 +28,90 @@ import Task exposing (Task)
 type alias Flags =
     { app : Path
     , cov : Path
-    , index : Path
+    , src : Maybe Path
     , out : Maybe Path
     }
 
 
 type alias Config =
-    { cp : ChildProcess.Permission
+    { fs : FileSystem.Permission
+    , cp : ChildProcess.Permission
     , stdout : Writable Bytes
     , stderr : Writable Bytes
     , scriptPath : Path
     }
 
 
+{-| The captured result of the JS engine: its output streams plus exit code
+(0 = success), so cleanup can run before we propagate a non-zero exit. -}
+type alias ChildResult =
+    { out : Bytes
+    , err : Bytes
+    , code : Int
+    }
+
+
 run : Config -> Flags -> Task Program.Failure {}
 run config flags =
+    Index.resolveSources config.fs flags.src
+        |> Task.andThen
+            (\sources ->
+                let
+                    indexed =
+                        Index.indexSources sources
+                in
+                -- Report any per-file parse errors, then run the join around a
+                -- temp file holding the freshly-built index.
+                reportIndexErrors config indexed.errors
+                    |> Task.andThen (\_ -> joinWithIndex config flags indexed.json)
+            )
+
+
+{-| Write the index JSON to a temp file, run the JS engine against it, forward
+its output, then remove the temp directory whatever the outcome. -}
+joinWithIndex : Config -> Flags -> String -> Task Program.Failure {}
+joinWithIndex config flags indexJson =
+    FileSystem.makeTempDirectory config.fs "gren-coverage"
+        |> Task.mapError (\e -> Program.ExitMessage ("could not create temp directory: " ++ FileSystem.errorToString e))
+        |> Task.andThen
+            (\tmpDir ->
+                let
+                    indexPath =
+                        Path.append (Path.fromPosixString "ast-index.json") tmpDir
+                in
+                FileSystem.writeFile config.fs (Bytes.fromString indexJson) indexPath
+                    |> Task.mapError (\e -> Program.ExitMessage ("could not write index: " ++ FileSystem.errorToString e))
+                    |> Task.andThen (\_ -> runEngine config flags indexPath)
+                    |> Task.andThen
+                        (\result ->
+                            -- Clean up first, then reproduce the child's output
+                            -- and exit code.
+                            removeDir config tmpDir
+                                |> Task.andThen (\_ -> forward config result.out result.err)
+                                |> Task.andThen
+                                    (\_ ->
+                                        if result.code == 0 then
+                                            Task.succeed {}
+
+                                        else
+                                            Task.fail (Program.ExitValue result.code)
+                                    )
+                        )
+            )
+
+
+{-| Run `node gren-coverage.js …`, capturing its output and exit code as a value
+(a non-zero exit is data here, not a task failure) so cleanup can run before we
+propagate it. A failure to even start `node` is still a hard error. -}
+runEngine : Config -> Flags -> Path -> Task Program.Failure ChildResult
+runEngine config flags indexPath =
     let
         args =
             Array.flatten
                 [ [ Path.toPosixString config.scriptPath ]
                 , [ "--app", Path.toPosixString flags.app ]
                 , [ "--cov", Path.toPosixString flags.cov ]
-                , [ "--index", Path.toPosixString flags.index ]
+                , [ "--index", Path.toPosixString indexPath ]
                 , when flags.out is
                     Just out ->
                         [ "--out", Path.toPosixString out ]
@@ -61,19 +129,34 @@ run config flags =
             }
     in
     ChildProcess.run config.cp "node" args runOptions
-        |> Task.andThen
-            (\ok -> forward config ok.stdout ok.stderr)
+        |> Task.map (\ok -> { out = ok.stdout, err = ok.stderr, code = 0 })
         |> Task.onError
             (\failure ->
                 when failure is
                     ChildProcess.ProgramError err ->
-                        forward config err.stdout err.stderr
-                            |> Task.andThen (\_ -> Task.fail (Program.ExitValue err.exitCode))
+                        Task.succeed { out = err.stdout, err = err.stderr, code = err.exitCode }
 
                     ChildProcess.InitError err ->
                         Task.fail
                             (Program.ExitMessage ("could not run " ++ err.program ++ ": " ++ err.errorCode))
             )
+
+
+{-| Remove the temp directory, ignoring any error (best-effort cleanup). -}
+removeDir : Config -> Path -> Task x {}
+removeDir config dir =
+    FileSystem.remove config.fs { recursive = True } dir
+        |> Task.map (\_ -> {})
+        |> Task.onError (\_ -> Task.succeed {})
+
+
+{-| Print each per-file parse error on its own stderr line. -}
+reportIndexErrors : Config -> Array String -> Task x {}
+reportIndexErrors config errs =
+    Array.foldl
+        (\e acc -> acc |> Task.andThen (\_ -> Stream.Log.line config.stderr e))
+        (Task.succeed {})
+        errs
 
 
 {-| Re-emit the child's captured stdout/stderr onto our own, byte for byte. -}

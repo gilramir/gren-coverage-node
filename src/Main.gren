@@ -2,8 +2,8 @@ module Main exposing (main)
 
 {-| The `gren-coverage` CLI: one Node program, subcommand-dispatched.
 
-    gren-coverage index <files…>               -- parse sources → ast-index.json (denominator)
-    gren-coverage join  --app --cov --index    -- decode sourcemap+V8, classify → coverage.json
+    gren-coverage index [files…]               -- parse sources → ast-index.json (denominator; default: whole project)
+    gren-coverage join  --app --cov [--src]    -- index sources, decode sourcemap+V8, classify → coverage.json
     gren-coverage render text <coverage.json>  -- annotated four-state terminal report
     gren-coverage render lcov <coverage.json>  -- LCOV tracefile for genhtml / editors
 
@@ -46,7 +46,7 @@ type Command
     | Join
         { app : Path
         , cov : Path
-        , index : Path
+        , src : Maybe Path
         , out : Maybe Path
         }
 
@@ -55,12 +55,12 @@ indexCommand : AP.Command (Array Path) {} Command
 indexCommand =
     { word = "index"
     , arguments =
-        AP.oneOrMoreArgs
-            { value = AP.pathParser, help = "Gren source file(s) to index" }
+        AP.zeroOrMoreArgs
+            { value = AP.pathParser, help = "Gren source file(s) to index (default: the whole project)" }
     , flags = AP.noFlags
-    , commonDescription = Just "Build the coverage denominator: every function and branch region in the given sources."
+    , commonDescription = Just "Build the coverage denominator: every function and branch region in the project's sources. With no files given, discovers them from the nearest gren.json."
     , summary = "Parse sources and emit ast-index.json to stdout."
-    , example = PP.words "gren-coverage index src/Main.gren > ast-index.json"
+    , example = PP.words "gren-coverage index > ast-index.json"
     , builder = \files _flags -> Index { files = files }
     }
 
@@ -103,20 +103,20 @@ renderLcovCommand =
     }
 
 
-joinCommand : AP.Command {} { app : Path, cov : Path, index : Path, out : Maybe Path } Command
+joinCommand : AP.Command {} { app : Path, cov : Path, src : Maybe Path, out : Maybe Path } Command
 joinCommand =
     { word = "join"
     , arguments = AP.noArgs
     , flags =
         AP.initFlags
-            (\app cov index out -> { app = app, cov = cov, index = index, out = out })
+            (\app cov src out -> { app = app, cov = cov, src = src, out = out })
             |> AP.requiredFlag (AP.LongOnly "app") AP.pathParser "The sourcemapped cov-app built with `gren make --sourcemaps`"
             |> AP.requiredFlag (AP.LongOnly "cov") AP.pathParser "NODE_V8_COVERAGE output directory"
-            |> AP.requiredFlag (AP.LongOnly "index") AP.pathParser "ast-index.json from `gren-coverage index`"
+            |> AP.flag (AP.LongOnly "src") AP.pathParser "Project root to index for the denominator (default: discovered from the current directory)"
             |> AP.flag (AP.LongOnly "out") AP.pathParser "Write coverage.json here (default: stdout)"
-    , commonDescription = Just "Decode the sourcemap + V8 counts and classify every region (delegates to gren-coverage.js)."
-    , summary = "Join V8 execution data against the AST index."
-    , example = PP.words "gren-coverage join --app cov-app --cov v8cov --index ast-index.json --out coverage.json"
+    , commonDescription = Just "Index the project's sources, then classify every region against the V8 counts + sourcemap (delegates to gren-coverage.js)."
+    , summary = "Build the denominator and join it against V8 execution data."
+    , example = PP.words "gren-coverage join --app cov-app --cov v8cov --out coverage.json"
     , builder = \_args flags -> Join flags
     }
 
@@ -200,7 +200,8 @@ onCommand env ctx cmd =
                             Path.fromPosixString "gren-coverage.js"
             in
             Join.run
-                { cp = ctx.cp
+                { fs = ctx.fs
+                , cp = ctx.cp
                 , stdout = env.stdout
                 , stderr = env.stderr
                 , scriptPath = scriptPath

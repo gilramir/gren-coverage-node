@@ -1,11 +1,17 @@
-module Coverage.Index exposing (run)
+module Coverage.Index exposing (run, resolveSources, indexSources)
 
-{-| `gren-coverage index <files…>` — the coverage *denominator*.
+{-| `gren-coverage index [files…]` — the coverage *denominator*.
 
 Parses each Gren source file to a typed `Src.Module` via `compiler-common`,
 walks it for every function region (top-level and `let`-bound) and every
 `when`/`if` branch, and emits `ast-index.json` to stdout — the small schema this
 repo owns (see `PLAN.md`).
+
+With no file arguments it discovers the current project itself: it walks up to
+the nearest `gren.json` (`Compiler.Paths.projectRoot`), reads it into an
+`Outline`, and indexes every file under the project's `source-directories`
+(`Compiler.Outline.findSourceFiles`) — so the caller need not enumerate sources.
+An explicit file list still overrides discovery for indexing a subset.
 
 Regions are kept as exclusive `(row, col)` positions and never rounded to whole
 lines: `compiler-common#13` lets a `let`-bodied declaration's end bleed into
@@ -23,9 +29,11 @@ parsed `Path`s from argparse, and stdout/stderr are threaded in.
 import Argparse.Program as Program
 import Bytes exposing (Bytes)
 import Compiler.Ast.Source as Src
+import Compiler.Outline as Outline exposing (Outline)
 import Compiler.Parse.Context as Context
 import Compiler.Parse.Module as PM
 import Compiler.Parse.Number as Number
+import Compiler.Paths
 import Compiler.SourcePosition as SP
 import FileSystem
 import FileSystem.Path as Path exposing (Path)
@@ -43,45 +51,144 @@ type alias Config =
     }
 
 
-{-| Index every file, write the JSON array to stdout, and report any per-file
-failures on stderr. Never exits non-zero: partial output is intentional. -}
+{-| With explicit files, index exactly those. With none, discover the current
+project's sources first. Either way, write the JSON array to stdout and report
+per-file failures on stderr — a failed *file* never aborts the batch. A failed
+*discovery* (no `gren.json`, unreadable outline) is a hard error with a non-zero
+exit, since there is nothing to index. -}
 run : Config -> Array Path -> Task Program.Failure {}
 run config files =
-    Task.sequence (Array.map (indexFile config.fs) files)
+    if Array.isEmpty files then
+        resolveSources config.fs Nothing
+            |> Task.andThen
+                (\sources ->
+                    let
+                        indexed =
+                            indexSources sources
+                    in
+                    reportErrors config indexed.errors
+                        |> Task.andThen (\_ -> Stream.Log.string config.stdout (indexed.json ++ "\n"))
+                )
+
+    else
+        Task.sequence (Array.map (indexFile config.fs) files)
+            |> Task.andThen
+                (\results ->
+                    let
+                        indexed =
+                            encodeResults results
+                    in
+                    reportErrors config indexed.errors
+                        |> Task.andThen (\_ -> Stream.Log.string config.stdout (indexed.json ++ "\n"))
+                )
+            |> Task.onError (\_ -> Task.succeed {})
+
+
+{-| Parse and encode a batch of already-read sources into the ast-index JSON
+string, keeping any per-file parse errors alongside it. Pure, so the `join`
+command can reuse it to build its denominator in-process. -}
+indexSources : Array { pathStr : String, source : String } -> { json : String, errors : Array String }
+indexSources sources =
+    encodeResults (Array.map (\s -> parseAndIndex s.pathStr s.source) sources)
+
+
+{-| Split index results into the JSON array of successes and the list of per-file
+error messages. -}
+encodeResults : Array (Result String Json.Value) -> { json : String, errors : Array String }
+encodeResults results =
+    let
+        modules =
+            Array.mapAndKeepJust
+                (\r ->
+                    when r is
+                        Ok v ->
+                            Just v
+
+                        Err _ ->
+                            Nothing
+                )
+                results
+
+        errs =
+            Array.mapAndKeepJust
+                (\r ->
+                    when r is
+                        Ok _ ->
+                            Nothing
+
+                        Err e ->
+                            Just e
+                )
+                results
+    in
+    { json = Json.encode 2 (Json.array (\v -> v) modules)
+    , errors = errs
+    }
+
+
+{-| Resolve a project's sources: read every file under its `source-directories`,
+returning each as its path label plus already-read source. The project root is
+`maybeSrc` when given (the `join --src` override), else discovered by walking up
+to the nearest `gren.json`. Any failure to find or read the outline fails the
+whole command. -}
+resolveSources : FileSystem.Permission -> Maybe Path -> Task Program.Failure (Array { pathStr : String, source : String })
+resolveSources fs maybeSrc =
+    let
+        projectRootTask =
+            when maybeSrc is
+                Just src ->
+                    Task.succeed src
+
+                Nothing ->
+                    Compiler.Paths.projectRoot fs
+                        |> Task.mapError
+                            (\_ -> Program.ExitMessage "could not find a gren.json in this or any parent directory")
+    in
+    projectRootTask
         |> Task.andThen
-            (\results ->
-                let
-                    modules =
-                        Array.mapAndKeepJust
-                            (\r ->
-                                when r is
-                                    Ok v ->
-                                        Just v
-
-                                    Err _ ->
-                                        Nothing
-                            )
-                            results
-
-                    errs =
-                        Array.mapAndKeepJust
-                            (\r ->
-                                when r is
-                                    Ok _ ->
-                                        Nothing
-
-                                    Err e ->
-                                        Just e
-                            )
-                            results
-
-                    jsonStr =
-                        Json.encode 2 (Json.array (\v -> v) modules)
-                in
-                reportErrors config errs
-                    |> Task.andThen (\_ -> Stream.Log.string config.stdout (jsonStr ++ "\n"))
+            (\projectPath ->
+                Outline.readFromPath fs
+                    (Path.append (Path.fromPosixString "gren.json") projectPath)
+                    |> Task.mapError (\err -> Program.ExitMessage (readOutlineErrorToString err))
+                    |> Task.andThen
+                        (\outline ->
+                            Outline.findSourceFiles fs outline projectPath
+                                |> Task.mapError
+                                    (\err -> Program.ExitMessage (findSourcesErrorToString err))
+                        )
             )
-        |> Task.onError (\_ -> Task.succeed {})
+        |> Task.map
+            (\found ->
+                Array.map
+                    (\f -> { pathStr = Path.toPosixString f.path, source = f.source })
+                    found
+            )
+
+
+readOutlineErrorToString : Outline.ReadFromPathError -> String
+readOutlineErrorToString err =
+    when err is
+        Outline.FromPathFileSystemError fsErr ->
+            "could not read gren.json: " ++ FileSystem.errorToString fsErr
+
+        Outline.FromPathInvalidString ->
+            "gren.json is not valid UTF-8"
+
+        Outline.FromPathInvalidJson _ ->
+            "gren.json is not valid JSON"
+
+
+findSourcesErrorToString : Outline.FindSourceFilesError -> String
+findSourcesErrorToString err =
+    when err is
+        Outline.FileSystemError fsErr ->
+            "could not list source files: " ++ FileSystem.errorToString fsErr
+
+        Outline.FilePathInvalidModuleName { path } ->
+            Path.toPosixString path ++ ": path does not map to a valid module name"
+
+        Outline.FileContentNotValidString path ->
+            Path.toPosixString path ++ ": file content is not valid UTF-8"
 
 
 {-| Print each per-file failure on its own stderr line. -}

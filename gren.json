@@ -9,6 +9,7 @@
         "direct": {
             "gilramir/gren-argparse": "local:../gren-argparse",
             "gren-lang/compiler-common": "3.0.0",
+            "gren-lang/compiler-node": "5.0.0",
             "gren-lang/core": "7.4.2",
             "gren-lang/node": "6.1.0"
         },

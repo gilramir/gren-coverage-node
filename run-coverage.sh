@@ -4,8 +4,9 @@
 #   entry point : gren-format-lib/tests/Main   (NOT the CLI — different DCE)
 #   denominator : gren-format-lib/src/**
 #
-# Builds the AST index and a sourcemapped test app, runs it under V8 coverage,
-# and joins the two into coverage.json. Writes intermediates under out/.
+# Builds a sourcemapped test app, runs it under V8 coverage, and joins the V8
+# data against a fresh index of gren-format-lib's sources into coverage.json
+# (`join` indexes the --src project itself). Writes intermediates under out/.
 #
 # Usage:  ./run-coverage.sh
 
@@ -20,12 +21,6 @@ mkdir -p "${OUT}"
 
 echo "==> building the gren-coverage app"
 (cd "${THIS_DIR}" && ./build.sh >/dev/null)
-
-echo "==> indexing gren-format-lib/src (the denominator)"
-# find lists one path per line; feed them as separate args via xargs.
-find "${LIB}/src" -name '*.gren' | sort \
-  | xargs node "${THIS_DIR}/app" index \
-  > "${OUT}/ast-index.json"
 
 echo "==> building the test harness with sourcemaps (output NOT *.js)"
 # Build Main from inside tests/ (its own gren app); never name the output *.js
@@ -43,13 +38,14 @@ if [ "${test_rc}" -ne 0 ]; then
 fi
 
 echo "==> joining"
-# `join` shells out to gren-coverage.js (the one irreducibly-JS step), which it
-# locates next to the built app. Its stdout summary is suppressed here; the
-# "wrote ..." note goes to stderr.
+# `join` indexes ${LIB} (the denominator) itself, then shells out to
+# gren-coverage.js (the one irreducibly-JS step) for the sourcemap/V8 decode.
+# Absolute --src keeps the report's file paths clean (no ..). Its stdout summary
+# is suppressed here; the "wrote ..." note goes to stderr.
 node "${THIS_DIR}/app" join \
   --app "${LIB}/tests/cov-app" \
   --cov "${COVDIR}" \
-  --index "${OUT}/ast-index.json" \
+  --src "${LIB}" \
   --out "${OUT}/coverage.json" >/dev/null
 
 echo "==> rendering lcov -> ${OUT}/coverage.lcov"
