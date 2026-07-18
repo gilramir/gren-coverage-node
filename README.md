@@ -226,5 +226,9 @@ JavaScript. Redoing that in Gren would mean re-matching Node's exact offset rule
 — easy to get wrong on any non-ASCII character, for no benefit to you. So that
 decode stays in `gren-coverage.js`. The Gren `join` command (`Command/Join.gren`)
 does the rest natively: it indexes your sources, then runs `gren-coverage.js`
-(kept next to `app`) for the decode and passes its output along. Everything else
-is native Gren too.
+for the decode and passes its output along. Everything else is native Gren too.
+
+`join` locates the script by looking in the same directory as the running
+program, so **`gren-coverage.js` must sit next to the built `app`.** The build
+puts both at the top level of this repo, so this works out of the box — but if
+you move or copy `app` elsewhere, bring `gren-coverage.js` along with it.
