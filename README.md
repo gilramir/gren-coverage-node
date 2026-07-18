@@ -202,11 +202,3 @@ decode stays in `gren-coverage.js`. The Gren `join` command (`Command/Join.gren`
 does the rest natively: it indexes your sources, then runs `gren-coverage.js`
 (kept next to `app`) for the decode and passes its output along. Everything else
 is native Gren too.
-
-## Dependencies
-
-- `gilramir/gren-argparse` — the command-line parser (currently a `local:`
-  dependency until the `requiredFlag` release is published)
-- `gren-lang/compiler-common` — the parser and syntax tree used to index your sources
-- `gren-lang/compiler-node` — locating `gren.json` and enumerating a project's
-  source files, so `join` can discover and index them itself
