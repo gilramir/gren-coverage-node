@@ -48,11 +48,10 @@ npm install -g gren-coverage-node
 gren-coverage-node --help
 ```
 
-This isn't published to npm yet, so that won't work today — in the meantime,
-build it from source and install the tarball yourself; see
-[DEPLOY.md](./DEPLOY.md) for the exact steps
-(`./build.sh` → `npm pack` → `npm install -g ./gren-coverage-node-*.tgz`). Once
-installed either way, `gren-coverage-node` is the command used everywhere below.
+`gren-coverage-node` is the command used everywhere below. See
+[DEPLOY.md](./DEPLOY.md) if you'd rather build from source and install the
+tarball yourself (`./build.sh` → `npm pack` → `npm install -g
+./gren-coverage-node-*.tgz`).
 
 If you're hacking on this tool itself rather than just using it, you need
 [devbox](https://www.jetify.com/devbox) (it pins Node and the Gren compiler
