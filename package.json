@@ -1,0 +1,31 @@
+{
+  "name": "gren-coverage",
+  "version": "1.0.0",
+  "description": "Code coverage (line, function, and when/if branch) for Gren node applications",
+  "bin": {
+    "gren-coverage": "app"
+  },
+  "files": [
+    "app",
+    "gren-coverage.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gilramir/gren-coverage-node.git"
+  },
+  "keywords": [
+    "gren",
+    "coverage",
+    "code-coverage",
+    "v8-coverage"
+  ],
+  "author": "Gilbert Ramirez <gram@alumni.rice.edu>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/gilramir/gren-coverage-node/issues"
+  },
+  "homepage": "https://github.com/gilramir/gren-coverage-node#readme",
+  "engines": {
+    "node": ">= 18"
+  }
+}
