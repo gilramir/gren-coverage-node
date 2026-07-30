@@ -3,3 +3,4 @@ app
 gren_packages/
 .devbox/
 .gren/
+*.tgz
