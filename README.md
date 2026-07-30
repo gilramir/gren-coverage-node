@@ -64,17 +64,26 @@ There are four steps. You can run them by hand once to understand them, then wra
 them in a script (see the full example at the end).
 
 Assume your project has an entry-point module called `Main` (for a test suite,
-that is usually your test runner's `Main`).
+that is usually your test runner's `Main`), and that you stay in your
+**project root** for all four steps — even where `Main` itself lives in a
+subdirectory with its own `gren.json`, like a `tests/` test harness. Working
+from the root keeps `coverage.json`'s file paths clean and lets `join` index
+your actual sources rather than the test harness's own (usually trivial)
+`gren.json`.
 
 ### 1. Build your app with a source map
 
 Compile the app you want to measure, asking for a source map. **Do not name the
 output `*.js`** — a `.js` output builds a module that defines your program but
-never starts it, so nothing runs. Use any other name (here, `cov-app`):
+never starts it, so nothing runs. Use any other name (here, `cov-app`). If
+`Main` lives in a subdirectory, `cd` there just for the build:
 
 ```bash
-gren make Main --sourcemaps --output=cov-app
+( cd tests && gren make Main --sourcemaps --output=cov-app )
 ```
+
+(No subdirectory? Drop the `cd tests &&` and run `gren make Main --sourcemaps
+--output=cov-app` directly.)
 
 For a test suite, `Main` is your test harness's entry point. The source map is
 embedded in `cov-app`, so there is nothing extra to keep track of.
@@ -85,8 +94,8 @@ Run the app you just built with `NODE_V8_COVERAGE` pointing at an empty
 directory. Node writes raw coverage data there:
 
 ```bash
-rm -rf v8cov && mkdir v8cov
-NODE_V8_COVERAGE=v8cov node cov-app
+mkdir -p v8cov
+( cd tests && NODE_V8_COVERAGE="$PWD/../v8cov" node cov-app )
 ```
 
 This is a normal run of your app or test suite — let it do whatever it normally
@@ -94,19 +103,21 @@ does. When it finishes, `v8cov/` holds the run counts.
 
 ### 3. Join it into a coverage report
 
-Combine the run counts and the source map with your project's sources:
+Combine the run counts and the source map with your project's sources. Still
+from the project root:
 
 ```bash
 gren-coverage-node join \
-  --app cov-app \
+  --app tests/cov-app \
   --cov v8cov \
+  --src . \
   --out coverage.json
 ```
 
-`join` finds your `gren.json` (in the current directory, or walking up from it),
-reads its `source-directories`, and indexes every function and branch itself —
-so you don't have to list your sources. If you run `join` from outside your
-project, point it at the project root with `--src <dir>`.
+`join` reads `--src`'s `gren.json` (here, the project root — pass `.` or drop
+`--src` entirely if `join` is already discovering the right one from the
+current directory), reads its `source-directories`, and indexes every
+function and branch itself — so you don't have to list your sources.
 
 `coverage.json` is the source of truth — the four-state label for every region.
 

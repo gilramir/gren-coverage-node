@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// gren-coverage: join V8 coverage of a compiled Gren node app against the AST
+// gren-coverage-node: join V8 coverage of a compiled Gren node app against the AST
 // index to classify every function and `when` branch into one of four states.
 //
 //   node gren-coverage.js --app <cov-app> --cov <v8-dir> --index <ast-index.json>
 //                         [--out coverage.json]
 //
-// The AST index (from `gren-coverage index`) is the denominator: it lists every function
+// The AST index (from `gren-coverage-node index`) is the denominator: it lists every function
 // and branch region that exists in the *source*. The source map + V8 coverage
 // are the numerator: they say which of those regions actually emitted JS and
 // how often it ran. Joining the two is what makes DCE'd code visible as
@@ -275,7 +275,7 @@ function printSummary(coverage) {
     `${String(t.total).padStart(6)} total ` +
     `  ${pct(t).toFixed(1).padStart(5)}% of reachable`;
 
-  console.log("\ngren-coverage — four-state classification (" + coverage.app + ")\n");
+  console.log("\ngren-coverage-node — four-state classification (" + coverage.app + ")\n");
   console.log(line("functions", f));
   console.log(line("branches", b));
 
