@@ -1,10 +1,10 @@
 module Command.RenderText exposing (run)
 
-{-| `gren-coverage render text <coverage.json>` — the human-readable report.
+{-| `gren-coverage-node render text <coverage.json>` — the human-readable report.
 
-    node app render text coverage.json            # summary + worst modules
-    node app render text coverage.json --top 5    # more modules
-    node app render text coverage.json --module Formatter.Render.BinopLayout
+    gren-coverage-node render text coverage.json            # summary + worst modules
+    gren-coverage-node render text coverage.json --top 5    # more modules
+    gren-coverage-node render text coverage.json --module Formatter.Render.BinopLayout
 
 The headline number is not a percentage — it is "which functions and `when`/`if`
 branches are reachable but never exercised". Those are the fixtures to write.
@@ -191,7 +191,7 @@ report config flags coverage =
 
                                 footer =
                                     [ c.dim
-                                        ("\n  annotate one module fully:  gren-coverage render text "
+                                        ("\n  annotate one module fully:  gren-coverage-node render text "
                                             ++ Path.toPosixString flags.coverage
                                             ++ " --module <Name>"
                                         )
@@ -208,7 +208,7 @@ report config flags coverage =
 
 summaryLines : Colors -> Coverage -> Array String
 summaryLines c coverage =
-    [ "\n" ++ c.bold "gren-coverage" ++ " — " ++ coverage.app ++ "\n"
+    [ "\n" ++ c.bold "gren-coverage-node" ++ " — " ++ coverage.app ++ "\n"
     , summaryRow c "functions" coverage.summary.functions
     , summaryRow c "branches" coverage.summary.branches
     ]

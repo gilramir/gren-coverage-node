@@ -1,8 +1,8 @@
 module Command.RenderLcov exposing (run)
 
-{-| `gren-coverage render lcov <coverage.json>` — an LCOV tracefile to stdout.
+{-| `gren-coverage-node render lcov <coverage.json>` — an LCOV tracefile to stdout.
 
-    node app render lcov coverage.json > coverage.lcov
+    gren-coverage-node render lcov coverage.json > coverage.lcov
     genhtml coverage.lcov -o html --branch-coverage
 
 `DA`/`FN`/`FNDA`/`BRDA` records carry the per-line, per-function and per-branch

@@ -1,6 +1,6 @@
 module Command.Join exposing (run)
 
-{-| `gren-coverage join --app --cov [--src] [--out]` — the numerator × denominator join.
+{-| `gren-coverage-node join --app --cov [--src] [--out]` — the numerator × denominator join.
 
 `join` builds the coverage *denominator* itself: it indexes the project's
 sources (the `--src` project root, or the one discovered from the current
@@ -71,7 +71,7 @@ run config flags =
 its output, then remove the temp directory whatever the outcome. -}
 joinWithIndex : Config -> Flags -> String -> Task Program.Failure {}
 joinWithIndex config flags indexJson =
-    FileSystem.makeTempDirectory config.fs "gren-coverage"
+    FileSystem.makeTempDirectory config.fs "gren-coverage-node"
         |> Task.mapError (\e -> Program.ExitMessage ("could not create temp directory: " ++ FileSystem.errorToString e))
         |> Task.andThen
             (\tmpDir ->

@@ -23,7 +23,7 @@ digraph CoveragePipeline {
     run        [label="run under\nNODE_V8_COVERAGE"];
     genhtml    [label="genhtml\n--branch-coverage"];
 
-    // This tool's own commands (gren-coverage) — light purple to stand out
+    // This tool's own commands (gren-coverage-node) — light purple to stand out
     node [shape=box, style="rounded,filled", fillcolor="#e8ddf7", color="#7a5fa8", fontcolor="#2b1c3a"];
     join       [label="join\nindex every function/branch (the total),\nfollow the source map, and match the\nrun counts back to your source"];
     renderText [label="render text"];

@@ -4,8 +4,8 @@
 #   entry point : tests/Main   (NOT the CLI — different DCE)
 #   denominator : src/**
 #
-# Drives the `gren-coverage` command as an installed user would (see
-# DEPLOY.md — `npm install -g gren-coverage`), not the in-repo ./app build.
+# Drives the `gren-coverage-node` command as an installed user would (see
+# DEPLOY.md — `npm install -g gren-coverage-node`), not the in-repo ./app build.
 # Run from the root of the project being measured (e.g. gren-format-lib/) —
 # this assumes the CWD is already there. Builds a sourcemapped test app, runs
 # it under V8 coverage, and joins the V8 data against a fresh index of the
@@ -16,8 +16,8 @@
 
 set -e
 
-if ! command -v gren-coverage >/dev/null; then
-  echo "!! gren-coverage not found on PATH — see DEPLOY.md to build + install it" >&2
+if ! command -v gren-coverage-node >/dev/null; then
+  echo "!! gren-coverage-node not found on PATH — see DEPLOY.md to build + install it" >&2
   exit 1
 fi
 
@@ -47,14 +47,14 @@ echo "==> joining"
 # gren-coverage.js (the one irreducibly-JS step) for the sourcemap/V8 decode.
 # Absolute --src keeps the report's file paths clean (no ..). Its stdout summary
 # is suppressed here; the "wrote ..." note goes to stderr.
-gren-coverage join \
+gren-coverage-node join \
   --app "${ROOT}/tests/cov-app" \
   --cov "${COVDIR}" \
   --src "${ROOT}" \
   --out "${OUT}/coverage.json" >/dev/null
 
 echo "==> rendering lcov -> ${OUT}/coverage.lcov"
-gren-coverage render lcov "${OUT}/coverage.json" > "${OUT}/coverage.lcov"
+gren-coverage-node render lcov "${OUT}/coverage.json" > "${OUT}/coverage.lcov"
 
 if command -v genhtml >/dev/null; then
   echo "==> genhtml -> ${OUT}/html/index.html"
@@ -64,7 +64,7 @@ else
 fi
 
 # Terminal report (the four-state view).
-gren-coverage render text "${OUT}/coverage.json"
+gren-coverage-node render text "${OUT}/coverage.json"
 
 # Propagate the test result so CI still fails on a failing suite.
 exit "${test_rc}"

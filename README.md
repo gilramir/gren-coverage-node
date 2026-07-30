@@ -44,15 +44,15 @@ four-state report above.
 ## Install
 
 ```bash
-npm install -g gren-coverage
-gren-coverage --help
+npm install -g gren-coverage-node
+gren-coverage-node --help
 ```
 
 This isn't published to npm yet, so that won't work today — in the meantime,
 build it from source and install the tarball yourself; see
 [DEPLOY.md](./DEPLOY.md) for the exact steps
-(`./build.sh` → `npm pack` → `npm install -g ./gren-coverage-*.tgz`). Once
-installed either way, `gren-coverage` is the command used everywhere below.
+(`./build.sh` → `npm pack` → `npm install -g ./gren-coverage-node-*.tgz`). Once
+installed either way, `gren-coverage-node` is the command used everywhere below.
 
 If you're hacking on this tool itself rather than just using it, you need
 [devbox](https://www.jetify.com/devbox) (it pins Node and the Gren compiler
@@ -98,7 +98,7 @@ does. When it finishes, `v8cov/` holds the run counts.
 Combine the run counts and the source map with your project's sources:
 
 ```bash
-gren-coverage join \
+gren-coverage-node join \
   --app cov-app \
   --cov v8cov \
   --out coverage.json
@@ -116,14 +116,14 @@ project, point it at the project root with `--src <dir>`.
 Print a human-readable report to the terminal:
 
 ```bash
-gren-coverage render text coverage.json
+gren-coverage-node render text coverage.json
 ```
 
 For example, running this against `gren-format-lib`'s own test suite prints
 (abridged):
 
 ```
-gren-coverage — cov-app
+gren-coverage-node — cov-app
 
 functions   844 hit     1 never    13 elim    55 absent    913 total    99.9% of reachable
 branches   1304 hit   284 never    40 elim   131 absent   1759 total    82.1% of reachable
@@ -139,7 +139,7 @@ Formatter.Logical.InsertExpressions  src/Formatter/Logical/InsertExpressions.gre
 
   … 20 more modules with gaps (use --all or --top N)
 
-  annotate one module fully:  render text coverage.json --module <Name>
+  annotate one module fully:  gren-coverage-node render text coverage.json --module <Name>
 ```
 
 The `hit / never / elim / absent` columns are the four states from the top of
@@ -149,7 +149,7 @@ while `elim` (dead-code-eliminated) stays counted instead of silently vanishing.
 Or produce a standard **LCOV** file, which editors and `genhtml` understand:
 
 ```bash
-gren-coverage render lcov coverage.json > coverage.lcov
+gren-coverage-node render lcov coverage.json > coverage.lcov
 genhtml coverage.lcov -o html --branch-coverage    # browsable HTML report
 ```
 
@@ -176,13 +176,13 @@ genhtml: ERROR: (category) unexpected category UNK for line <file>:<line>
 
 Older `lcov` (2.0 and earlier) just let that slide.
 
-`gren-coverage` handles this; `render lcov` fills in a `DA` row for every function's
+`gren-coverage-node` handles this; `render lcov` fills in a `DA` row for every function's
 start line, even eliminated ones. We've checked the output against both
 `lcov 2.0` and `lcov 2.4` and both render cleanly.
 
 ## Commands
 
-`gren-coverage <command>`:
+`gren-coverage-node <command>`:
 
 | command | what it does |
 |---------|--------------|
@@ -201,7 +201,7 @@ next line doesn't wrongly mark that next line as covered.
 
 [`run-coverage.sh`](./run-coverage.sh) in this repo wraps all the steps into
 one script, run against `gren-format-lib`'s own test suite. It's a good
-template to copy for your own project. It assumes `gren-coverage` is already
+template to copy for your own project. It assumes `gren-coverage-node` is already
 on your `PATH` (it checks and bails with a pointer to `DEPLOY.md` if not), and
 that the caller's working directory is already the root of the project being
 measured — so you run it as:
@@ -221,13 +221,13 @@ rm -rf out/v8cov && mkdir -p out/v8cov
 ( cd tests && NODE_V8_COVERAGE="$PWD/../out/v8cov" node cov-app )
 
 # 3. join — index the project (--src) and combine with the run counts
-gren-coverage join --app "$PWD/tests/cov-app" --cov out/v8cov \
+gren-coverage-node join --app "$PWD/tests/cov-app" --cov out/v8cov \
   --src "$PWD" --out out/coverage.json
 
 # 4. render a terminal report, an lcov file, and (if genhtml is on PATH) HTML
-gren-coverage render lcov out/coverage.json > out/coverage.lcov
+gren-coverage-node render lcov out/coverage.json > out/coverage.lcov
 command -v genhtml && genhtml out/coverage.lcov -o out/html --branch-coverage
-gren-coverage render text out/coverage.json
+gren-coverage-node render text out/coverage.json
 ```
 
 That project also lets you trigger the whole thing from its own test runner —
@@ -240,7 +240,7 @@ however you like.
 ```
 build.sh                 builds the CLI into ./app (chmod +x'd)
 run-coverage.sh          the full worked example (build → run → join → render → html)
-package.json             npm packaging — exposes ./app as the `gren-coverage` bin
+package.json             npm packaging — exposes ./app as the `gren-coverage-node` bin
 DEPLOY.md                how to build, test the packaged tarball, and publish
 gren.json / devbox.json  the Gren app (platform: node)
 src/

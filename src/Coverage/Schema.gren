@@ -3,7 +3,7 @@ module Coverage.Schema exposing
     , decoder, stateFromString, stateToString
     )
 
-{-| The typed contract for `coverage.json` — the file `gren-coverage join`
+{-| The typed contract for `coverage.json` — the file `gren-coverage-node join`
 writes and the `render` subcommands read.
 
 This is the whole payoff of porting the renderers to Gren: the JSON handshake

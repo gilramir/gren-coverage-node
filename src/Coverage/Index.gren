@@ -1,6 +1,6 @@
 module Coverage.Index exposing (run, resolveSources, indexSources)
 
-{-| `gren-coverage index [files…]` — the coverage *denominator*.
+{-| `gren-coverage-node index [files…]` — the coverage *denominator*.
 
 Parses each Gren source file to a typed `Src.Module` via `compiler-common`,
 walks it for every function region (top-level and `let`-bound) and every
