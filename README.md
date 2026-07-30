@@ -43,15 +43,21 @@ four-state report above.
 
 ## Install
 
-You need [devbox](https://www.jetify.com/devbox) (it pins Node and the Gren
-compiler for you). Build the tool once:
-
 ```bash
-devbox run build    # produces ./app, run with: node app <command>
-node app --help
+npm install -g gren-coverage
+gren-coverage --help
 ```
 
-`app` is a normal Node program. From here on, `node app` is the coverage tool.
+This isn't published to npm yet, so that won't work today — in the meantime,
+build it from source and install the tarball yourself; see
+[DEPLOY.md](./DEPLOY.md) for the exact steps
+(`./build.sh` → `npm pack` → `npm install -g ./gren-coverage-*.tgz`). Once
+installed either way, `gren-coverage` is the command used everywhere below.
+
+If you're hacking on this tool itself rather than just using it, you need
+[devbox](https://www.jetify.com/devbox) (it pins Node and the Gren compiler
+for you) — `./build.sh` produces `./app`, runnable directly as `./app
+<command>` or `node app <command>`.
 
 ## Using it in your project
 
@@ -92,7 +98,7 @@ does. When it finishes, `v8cov/` holds the run counts.
 Combine the run counts and the source map with your project's sources:
 
 ```bash
-node /path/to/app join \
+gren-coverage join \
   --app cov-app \
   --cov v8cov \
   --out coverage.json
@@ -110,7 +116,7 @@ project, point it at the project root with `--src <dir>`.
 Print a human-readable report to the terminal:
 
 ```bash
-node /path/to/app render text coverage.json
+gren-coverage render text coverage.json
 ```
 
 For example, running this against `gren-format-lib`'s own test suite prints
@@ -143,7 +149,7 @@ while `elim` (dead-code-eliminated) stays counted instead of silently vanishing.
 Or produce a standard **LCOV** file, which editors and `genhtml` understand:
 
 ```bash
-node /path/to/app render lcov coverage.json > coverage.lcov
+gren-coverage render lcov coverage.json > coverage.lcov
 genhtml coverage.lcov -o html --branch-coverage    # browsable HTML report
 ```
 
@@ -159,7 +165,7 @@ line that never ran, and branch markers for each `when` / `if`:
 
 ## Commands
 
-`node app <command>`:
+`gren-coverage <command>`:
 
 | command | what it does |
 |---------|--------------|
@@ -176,25 +182,35 @@ next line doesn't wrongly mark that next line as covered.
 
 ## A complete example
 
-`gren-format-lib` wraps all the steps in one script,
-[`run-coverage.sh`](./run-coverage.sh). It is a good template to copy. The core
-of it is:
+[`run-coverage.sh`](./run-coverage.sh) in this repo wraps all the steps into
+one script, run against `gren-format-lib`'s own test suite. It's a good
+template to copy for your own project. It assumes `gren-coverage` is already
+on your `PATH` (it checks and bails with a pointer to `DEPLOY.md` if not), and
+that the caller's working directory is already the root of the project being
+measured — so you run it as:
+
+```bash
+( cd /path/to/gren-format-lib && /path/to/gren-coverage-node/run-coverage.sh )
+```
+
+The core of it is:
 
 ```bash
 # 1. build the test harness with a source map (output is NOT *.js)
-( cd "$LIB/tests" && gren make Main --sourcemaps --output=cov-app )
+( cd tests && gren make Main --sourcemaps --output=cov-app )
 
 # 2. run the tests under Node coverage
-rm -rf v8cov && mkdir v8cov
-( cd "$LIB/tests" && NODE_V8_COVERAGE=v8cov node cov-app )
+rm -rf out/v8cov && mkdir -p out/v8cov
+( cd tests && NODE_V8_COVERAGE="$PWD/../out/v8cov" node cov-app )
 
-# 3. join — index the library (--src) and combine with the run counts
-node app join --app "$LIB/tests/cov-app" --cov v8cov \
-  --src "$LIB" --out out/coverage.json
+# 3. join — index the project (--src) and combine with the run counts
+gren-coverage join --app "$PWD/tests/cov-app" --cov out/v8cov \
+  --src "$PWD" --out out/coverage.json
 
-# 4. render both a terminal report and an lcov file
-node app render lcov out/coverage.json > out/coverage.lcov
-node app render text out/coverage.json
+# 4. render a terminal report, an lcov file, and (if genhtml is on PATH) HTML
+gren-coverage render lcov out/coverage.json > out/coverage.lcov
+command -v genhtml && genhtml out/coverage.lcov -o out/html --branch-coverage
+gren-coverage render text out/coverage.json
 ```
 
 That project also lets you trigger the whole thing from its own test runner —
@@ -205,8 +221,10 @@ however you like.
 ## Layout
 
 ```
-build.sh                 builds the CLI into ./app
-run-coverage.sh          the full worked example (build → run → join → render)
+build.sh                 builds the CLI into ./app (chmod +x'd)
+run-coverage.sh          the full worked example (build → run → join → render → html)
+package.json             npm packaging — exposes ./app as the `gren-coverage` bin
+DEPLOY.md                how to build, test the packaged tarball, and publish
 gren.json / devbox.json  the Gren app (platform: node)
 src/
   Main.gren              command-line wiring + dispatch
@@ -231,4 +249,8 @@ for the decode and passes its output along. Everything else is native Gren too.
 `join` locates the script by looking in the same directory as the running
 program, so **`gren-coverage.js` must sit next to the built `app`.** The build
 puts both at the top level of this repo, so this works out of the box — but if
-you move or copy `app` elsewhere, bring `gren-coverage.js` along with it.
+you move or copy `app` elsewhere, bring `gren-coverage.js` along with it. This
+also holds for the npm package: `app` and `gren-coverage.js` are packaged and
+installed side by side, and the lookup still resolves correctly through npm's
+`node_modules/.bin` symlink (Node resolves the symlink to its real path before
+`join` looks for its sibling).
