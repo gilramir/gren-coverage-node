@@ -165,7 +165,7 @@ renderModule tn m =
         baseDa =
             Array.foldl (\l d -> Dict.set l.line l.count d) Dict.empty m.lines
 
-        daLines =
+        daLinesWithBranches =
             Array.foldl
                 (\blk d ->
                     if Dict.member blk.row d then
@@ -176,6 +176,22 @@ renderModule tn m =
                 )
                 baseDa
                 reachedBlocks
+
+        -- Also synthesize a DA line for every function's start row that has
+        -- none: an `eliminated` function (DCE'd, zero mapped lines) still
+        -- gets an FN record below, and genhtml requires every FN row to have
+        -- a matching DA row or it errors ("unexpected category").
+        daLines =
+            Array.foldl
+                (\f d ->
+                    if Dict.member f.start.row d then
+                        d
+
+                    else
+                        Dict.set f.start.row (countOr0 f.count) d
+                )
+                daLinesWithBranches
+                m.functions
 
         daRecords =
             Dict.foldl
