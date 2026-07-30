@@ -163,6 +163,21 @@ line that never ran, and branch markers for each `when` / `if`:
 
 ![LCOV HTML file view](docs/diagrams/lcov-html-detail.png)
 
+### `genhtml`/`lcov` version differences
+
+`genhtml` has gotten stricter about internal consistency across `lcov`
+releases. Notably, **`lcov` 2.1+ requires every line referenced by an `FN`
+record to also have a matching `DA` record**, and errors out
+(`ERROR: (category) unexpected category ... for line ...`) if it doesn't —
+older `lcov` (2.0 and earlier) silently tolerated the gap. An `eliminated`
+function (dead-code-eliminated, so it has no mapped source lines at all)
+used to violate exactly that rule, since its `FN` row had no `DA` row to
+match. This is fixed as of the current `render lcov` output, which
+synthesizes a `DA` row for every function's start line — verified clean
+against both `lcov 2.0` (a plain system/apt install) and `lcov 2.4`
+(what `devbox`'s Nix-packaged `lcov` resolves to). If you hit a `category`
+error on an older build of this tool, that's the bug; update and re-render.
+
 ## Commands
 
 `gren-coverage <command>`:
