@@ -1,5 +1,7 @@
 # gren-coverage-node
 
+Published at [npmjs](https://www.npmjs.com/package/gren-coverage-node).
+
 Code coverage for **Gren applications that run on Node**. It reports coverage at
 three levels of detail — per line, per function, and per `when` / `if` branch.
 
@@ -249,7 +251,7 @@ however you like.
 
 ```
 build.sh                 builds the CLI into ./app (chmod +x'd)
-run-coverage.sh          the full worked example (build → run → join → render → html)
+run-coverage.sh          the full example (build → run → join → render → html)
 package.json             npm packaging — exposes ./app as the `gren-coverage-node` bin
 DEPLOY.md                how to build, test the packaged tarball, and publish
 gren.json / devbox.json  the Gren app (platform: node)
