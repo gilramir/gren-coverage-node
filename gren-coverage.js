@@ -19,6 +19,7 @@
 //   absent       module never appears in the source map at all
 const fs = require("fs");
 const path = require("path");
+const url = require("url");
 
 // --- source map / V8 decoding -------------------------------------------
 
@@ -80,20 +81,32 @@ function parseSegments(map, starts) {
   return segs;
 }
 
-// Merge every V8 coverage JSON in dir for the given script url substring.
-function loadRanges(covDir, appBase) {
-  const all = [];
+// Merge every V8 coverage JSON in dir for the given script. A script is the
+// app when its URL is the app's own file URL, not merely one containing its
+// name, so another program that ran under the same NODE_V8_COVERAGE (a server,
+// an example driven as a child process) is not read through this app's map. A
+// program run more than once writes a file per process, and the same range
+// then appears in each: its counts are summed, since the lookup below takes
+// one range per width and would otherwise report whichever process came last.
+function loadRanges(covDir, appPath) {
+  const appUrl = url.pathToFileURL(path.resolve(appPath)).href;
+  const byRange = new Map();
   for (const f of fs.readdirSync(covDir)) {
     if (!f.endsWith(".json")) continue;
     let j;
     try { j = JSON.parse(fs.readFileSync(path.join(covDir, f), "utf8")); } catch { continue; }
     for (const script of (j.result || [])) {
-      if (!script.url.includes(appBase)) continue;
+      if (script.url !== appUrl) continue;
       for (const fn of script.functions)
-        for (const r of fn.ranges) all.push(r);
+        for (const r of fn.ranges) {
+          const key = r.startOffset + ":" + r.endOffset;
+          const have = byRange.get(key);
+          if (have) have.count += r.count;
+          else byRange.set(key, { startOffset: r.startOffset, endOffset: r.endOffset, count: r.count });
+        }
     }
   }
-  return all;
+  return [...byRange.values()];
 }
 
 // innermost-range lookup: narrowest enclosing range wins, so an uncalled inner
@@ -213,7 +226,7 @@ function main() {
   const { js, map } = readMap(opt.app);
   const starts = lineStarts(js);
   const segs = parseSegments(map, starts);
-  const ranges = loadRanges(opt.cov, path.basename(opt.app));
+  const ranges = loadRanges(opt.cov, opt.app);
   if (!ranges.length) {
     console.error("no V8 coverage ranges found for " + path.basename(opt.app) + " in " + opt.cov);
     process.exit(1);
