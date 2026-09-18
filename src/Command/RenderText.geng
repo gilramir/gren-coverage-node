@@ -87,7 +87,7 @@ type alias Colors =
 
 esc : String
 esc =
-    String.fromChar (Char.fromCode 27)
+    "\u{001B}"
 
 
 paint : Bool -> String -> String -> String
@@ -424,7 +424,7 @@ annotatedLines c m src =
 
                 w =
                     Array.foldl
-                        (\l acc -> max acc (String.unitLength (String.fromInt l.count)))
+                        (\l acc -> max acc (String.count (String.fromInt l.count)))
                         3
                         m.lines
 

@@ -24,7 +24,6 @@ import Coverage.Index as Index
 import Dict
 import FileSystem
 import FileSystem.Path as Path exposing (Path)
-import Init
 import Node
 import Task exposing (Task)
 import Terminal
@@ -56,9 +55,9 @@ indexCommand =
     { word = "index"
     , arguments =
         AP.zeroOrMoreArgs
-            { value = AP.pathParser, help = "Gren source file(s) to index (default: the whole project)" }
+            { value = AP.pathParser, help = "Geng source file(s) to index (default: the whole project)" }
     , flags = AP.noFlags
-    , commonDescription = Just "Build the coverage denominator: every function and branch region in the project's sources. With no files given, discovers them from the nearest gren.json."
+    , commonDescription = Just "Build the coverage denominator: every function and branch region in the project's sources. With no files given, discovers them from the nearest geng.toml."
     , summary = "Parse sources and emit ast-index.json to stdout."
     , example = PP.words "gren-coverage-node index > ast-index.json"
     , builder = \files _flags -> Index { files = files }
@@ -110,7 +109,7 @@ joinCommand =
     , flags =
         AP.initFlags
             (\app cov src out -> { app = app, cov = cov, src = src, out = out })
-            |> AP.requiredFlag (AP.LongOnly "app") AP.pathParser "The sourcemapped cov-app built with `gren make --sourcemaps`"
+            |> AP.requiredFlag (AP.LongOnly "app") AP.pathParser "The sourcemapped cov-app built with `geng make --sourcemaps`"
             |> AP.requiredFlag (AP.LongOnly "cov") AP.pathParser "NODE_V8_COVERAGE output directory"
             |> AP.flag (AP.LongOnly "src") AP.pathParser "Project root to index for the denominator (default: discovered from the current directory)"
             |> AP.flag (AP.LongOnly "out") AP.pathParser "Write coverage.json here (default: stdout)"
@@ -157,23 +156,34 @@ type alias Context =
     }
 
 
-main : Node.SimpleProgram a
+main : Task Never {}
 main =
-    Program.runWithContext
-        { parser = parser
-        , init =
-            \_env toProgram ->
-                Init.await FileSystem.initialize <| \fs ->
-                Init.await ChildProcess.initialize <| \cp ->
-                Init.await Terminal.initialize <| \terminal ->
-                Init.awaitTask Node.getEnvironmentVariables <| \envVars ->
-                    let
-                        useColor =
-                            terminal /= Nothing && not (Dict.member "NO_COLOR" envVars)
-                    in
-                    toProgram { fs = fs, cp = cp, useColor = useColor }
-        , onCommand = onCommand
-        }
+    Node.getEnvironment
+        |> Task.andThen
+            (\env ->
+                Program.runWithContext env
+                    { parser = parser
+                    , init =
+                        \_env ->
+                            Task.map3
+                                (\fs cp useColor -> { fs = fs, cp = cp, useColor = useColor })
+                                FileSystem.initialize
+                                ChildProcess.initialize
+                                (Task.map2
+                                    (\terminal envVars ->
+                                        when terminal is
+                                            Just _ ->
+                                                not (Dict.member "NO_COLOR" envVars)
+
+                                            Nothing ->
+                                                False
+                                    )
+                                    Terminal.initialize
+                                    Node.getEnvironmentVariables
+                                )
+                    , onCommand = onCommand
+                    }
+            )
 
 
 onCommand : Node.Environment -> Context -> Command -> Task Program.Failure {}

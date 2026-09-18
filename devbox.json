@@ -7,7 +7,7 @@
   "shell": {
     "scripts": {
       "build": [
-        "gren make Main --output=app"
+        "geng make Main --output=app"
       ]
     }
   }

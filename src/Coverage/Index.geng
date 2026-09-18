@@ -2,13 +2,13 @@ module Coverage.Index exposing (run, resolveSources, indexSources)
 
 {-| `gren-coverage-node index [files…]` — the coverage *denominator*.
 
-Parses each Gren source file to a typed `Src.Module` via `compiler-common`,
+Parses each Geng source file to a typed `Src.Module` via `compiler-common`,
 walks it for every function region (top-level and `let`-bound) and every
 `when`/`if` branch, and emits `ast-index.json` to stdout — the small schema this
 repo owns (see `PLAN.md`).
 
 With no file arguments it discovers the current project itself: it walks up to
-the nearest `gren.json` (`Compiler.Paths.projectRoot`), reads it into an
+the nearest `geng.toml` (`Compiler.Paths.projectRoot`), reads it into an
 `Outline`, and indexes every file under the project's `source-directories`
 (`Compiler.Outline.findSourceFiles`) — so the caller need not enumerate sources.
 An explicit file list still overrides discovery for indexing a subset.
@@ -54,7 +54,7 @@ type alias Config =
 {-| With explicit files, index exactly those. With none, discover the current
 project's sources first. Either way, write the JSON array to stdout and report
 per-file failures on stderr — a failed *file* never aborts the batch. A failed
-*discovery* (no `gren.json`, unreadable outline) is a hard error with a non-zero
+*discovery* (no `geng.toml`, unreadable outline) is a hard error with a non-zero
 exit, since there is nothing to index. -}
 run : Config -> Array Path -> Task Program.Failure {}
 run config files =
@@ -129,7 +129,7 @@ encodeResults results =
 {-| Resolve a project's sources: read every file under its `source-directories`,
 returning each as its path label plus already-read source. The project root is
 `maybeSrc` when given (the `join --src` override), else discovered by walking up
-to the nearest `gren.json`. Any failure to find or read the outline fails the
+to the nearest `geng.toml`. Any failure to find or read the outline fails the
 whole command. -}
 resolveSources : FileSystem.Permission -> Maybe Path -> Task Program.Failure (Array { pathStr : String, source : String })
 resolveSources fs maybeSrc =
@@ -142,13 +142,13 @@ resolveSources fs maybeSrc =
                 Nothing ->
                     Compiler.Paths.projectRoot fs
                         |> Task.mapError
-                            (\_ -> Program.ExitMessage "could not find a gren.json in this or any parent directory")
+                            (\_ -> Program.ExitMessage ("could not find a " ++ Outline.fileName ++ " in this or any parent directory"))
     in
     projectRootTask
         |> Task.andThen
             (\projectPath ->
                 Outline.readFromPath fs
-                    (Path.append (Path.fromPosixString "gren.json") projectPath)
+                    (Path.append (Path.fromPosixString Outline.fileName) projectPath)
                     |> Task.mapError (\err -> Program.ExitMessage (readOutlineErrorToString err))
                     |> Task.andThen
                         (\outline ->
@@ -159,9 +159,11 @@ resolveSources fs maybeSrc =
             )
         |> Task.map
             (\found ->
-                Array.map
-                    (\f -> { pathStr = Path.toPosixString f.path, source = f.source })
-                    found
+                found
+                    -- The build reads an extern's JavaScript with the sources
+                    -- (`Ext/<Module>.js`), and there is nothing in it to index.
+                    |> Array.keepIf (\f -> f.path.extension == "geng")
+                    |> Array.map (\f -> { pathStr = Path.toPosixString f.path, source = f.source })
             )
 
 
@@ -169,13 +171,10 @@ readOutlineErrorToString : Outline.ReadFromPathError -> String
 readOutlineErrorToString err =
     when err is
         Outline.FromPathFileSystemError fsErr ->
-            "could not read gren.json: " ++ FileSystem.errorToString fsErr
+            "could not read " ++ Outline.fileName ++ ": " ++ FileSystem.errorToString fsErr
 
-        Outline.FromPathInvalidString ->
-            "gren.json is not valid UTF-8"
-
-        Outline.FromPathInvalidJson _ ->
-            "gren.json is not valid JSON"
+        Outline.FromPathInvalidToml tomlErr ->
+            Outline.fileName ++ ": " ++ Outline.readErrorToString tomlErr
 
 
 findSourcesErrorToString : Outline.FindSourceFilesError -> String
@@ -533,8 +532,15 @@ renderPattern pat =
         Src.PStr s ->
             "\"" ++ s ++ "\""
 
-        Src.PInt { value } ->
-            String.fromInt value
+        Src.PInt literal ->
+            written literal
+
+
+{-| A number literal as it was written, suffix and all: Geng's parser answers a
+literal's text, since only the frontend knows its type (D149). -}
+written : { r | text : String, suffix : Maybe Number.Suffix } -> String
+written { text, suffix } =
+    text ++ Maybe.withDefault "" (Maybe.map Number.suffixToString suffix)
 
 
 {-| A compact, lossy one-line label for an `if` condition — enough to name the
@@ -593,14 +599,14 @@ renderExpr expr =
 
         Src.NumberLiteral outcome ->
             when outcome is
-                Number.Integer n ->
-                    String.fromInt n
+                Number.Integer literal ->
+                    written literal
 
-                Number.FloatingPoint { text } ->
-                    text
+                Number.FloatingPoint { text, suffix } ->
+                    written { text = text, suffix = suffix }
 
-                Number.Hex n ->
-                    String.fromInt n
+                Number.Hex literal ->
+                    written literal
 
         Src.ArrayLiteral _ ->
             "[…]"
