@@ -539,11 +539,11 @@ renderPattern pat =
             written literal
 
 
-{-| A number literal as it was written, suffix and all: Geng's parser answers a
-literal's text, since only the frontend knows its type (D149). -}
-written : { r | text : String, suffix : Maybe Number.Suffix } -> String
-written { text, suffix } =
-    text ++ Maybe.withDefault "" (Maybe.map Number.suffixToString suffix)
+{-| A number literal as it was written: Geng's parser answers a literal's text,
+since only the frontend knows its type (D149). -}
+written : { r | text : String } -> String
+written { text } =
+    text
 
 
 {-| A compact, lossy one-line label for an `if` condition — enough to name the
@@ -609,8 +609,8 @@ renderExpr expr =
                 Number.Integer literal ->
                     written literal
 
-                Number.FloatingPoint { text, suffix } ->
-                    written { text = text, suffix = suffix }
+                Number.FloatingPoint { text } ->
+                    written { text = text }
 
                 Number.Hex literal ->
                     written literal
