@@ -452,6 +452,9 @@ walkExpr owner expr =
         Src.Parens e ->
             walkExpr owner e
 
+        Src.Annotated { expression } ->
+            walkExpr owner expression
+
 
 walkMany : String -> Array Src.Expression -> Acc
 walkMany owner exprs =
@@ -581,6 +584,10 @@ renderExpr expr =
 
         Src.Parens e ->
             "(" ++ renderExpr e ++ ")"
+
+        -- The type is left out, as a lambda's body is: this is a label.
+        Src.Annotated { expression } ->
+            renderExpr expression ++ " : …"
 
         Src.Access { expression, accessor } ->
             renderExpr expression ++ "." ++ accessor
