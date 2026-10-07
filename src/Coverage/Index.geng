@@ -530,10 +530,10 @@ renderPattern pat =
             "[ " ++ String.join ", " (Array.map renderPattern items) ++ " ]"
 
         Src.PChr c ->
-            "'" ++ String.fromChar c ++ "'"
+            c.text
 
         Src.PStr s ->
-            "\"" ++ s ++ "\""
+            s.text
 
         Src.PInt literal ->
             written literal
@@ -599,10 +599,10 @@ renderExpr expr =
             renderExpr left ++ " " ++ operator.value ++ " " ++ renderExpr right
 
         Src.CharLiteral c ->
-            "'" ++ String.fromChar c ++ "'"
+            c.text
 
         Src.StringLiteral s ->
-            "\"" ++ s ++ "\""
+            s.text
 
         Src.NumberLiteral outcome ->
             when outcome is
