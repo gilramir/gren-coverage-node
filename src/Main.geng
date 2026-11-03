@@ -55,7 +55,7 @@ indexCommand =
     { word = "index"
     , arguments =
         AP.zeroOrMoreArgs
-            { value = AP.pathParser, help = "Geng source file(s) to index (default: the whole project)" }
+            { value = (AP.pathParser Path.fromPosixString), help = "Geng source file(s) to index (default: the whole project)" }
     , flags = AP.noFlags
     , commonDescription = Just "Build the coverage denominator: every function and branch region in the project's sources. With no files given, discovers them from the nearest geng.toml."
     , summary = "Parse sources and emit ast-index.json to stdout."
@@ -68,7 +68,7 @@ renderTextCommand : AP.Command Path { module_ : Maybe String, top : Maybe Int, a
 renderTextCommand =
     { word = "text"
     , arguments =
-        AP.oneArg { value = AP.pathParser, help = "coverage.json produced by `join`" }
+        AP.oneArg { value = (AP.pathParser Path.fromPosixString), help = "coverage.json produced by `join`" }
     , flags =
         AP.initFlags
             (\module_ top all -> { module_ = module_, top = top, all = all })
@@ -93,7 +93,7 @@ renderLcovCommand : AP.Command Path {} Command
 renderLcovCommand =
     { word = "lcov"
     , arguments =
-        AP.oneArg { value = AP.pathParser, help = "coverage.json produced by `join`" }
+        AP.oneArg { value = (AP.pathParser Path.fromPosixString), help = "coverage.json produced by `join`" }
     , flags = AP.noFlags
     , commonDescription = Just "Standard LCOV tracefile for genhtml, editor gutters, or CI."
     , summary = "Render coverage.json as an LCOV tracefile to stdout."
@@ -109,10 +109,10 @@ joinCommand =
     , flags =
         AP.initFlags
             (\app cov src out -> { app = app, cov = cov, src = src, out = out })
-            |> AP.requiredFlag (AP.LongOnly "app") AP.pathParser "The sourcemapped cov-app built with `geng make --sourcemaps`"
-            |> AP.requiredFlag (AP.LongOnly "cov") AP.pathParser "NODE_V8_COVERAGE output directory"
-            |> AP.flag (AP.LongOnly "src") AP.pathParser "Project root to index for the denominator (default: discovered from the current directory)"
-            |> AP.flag (AP.LongOnly "out") AP.pathParser "Write coverage.json here (default: stdout)"
+            |> AP.requiredFlag (AP.LongOnly "app") (AP.pathParser Path.fromPosixString) "The sourcemapped cov-app built with `geng make --sourcemaps`"
+            |> AP.requiredFlag (AP.LongOnly "cov") (AP.pathParser Path.fromPosixString) "NODE_V8_COVERAGE output directory"
+            |> AP.flag (AP.LongOnly "src") (AP.pathParser Path.fromPosixString) "Project root to index for the denominator (default: discovered from the current directory)"
+            |> AP.flag (AP.LongOnly "out") (AP.pathParser Path.fromPosixString) "Write coverage.json here (default: stdout)"
     , commonDescription = Just "Index the project's sources, then classify every region against the V8 counts + sourcemap (delegates to gren-coverage.js)."
     , summary = "Build the denominator and join it against V8 execution data."
     , example = PP.words "gren-coverage-node join --app cov-app --cov v8cov --out coverage.json"
